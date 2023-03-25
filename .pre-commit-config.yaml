@@ -1,0 +1,22 @@
+repos:
+  - repo: local
+    hooks:
+      - id: rustfmt
+        name: rustfmt
+        description: Check if all files follow the rustfmt style
+        entry: cargo fmt --all --check
+        language: system
+        pass_filenames: false
+      - id: clippy
+        name: clippy
+        description: Rust linter
+        entry: cargo clippy
+        args: ["--", "-D", "warnings"]
+        language: system
+        pass_filenames: false
+      - id: tests
+        name: tests
+        description: Check that all tests pass
+        entry: cargo test
+        language: system
+        pass_filenames: false
