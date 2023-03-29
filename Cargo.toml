@@ -6,3 +6,4 @@ authors = ["Tyson Liddell <tysonliddell@hotmail.com>"]
 description = "A CHIP-8 emulator"
 
 [dependencies]
+clap = { version = "4.1.13", features = ["derive"] }
