@@ -6,6 +6,7 @@ repos:
         description: Check if all files follow the rustfmt style
         entry: cargo fmt --all --check
         language: system
+        types: [rust]
         pass_filenames: false
       - id: clippy
         name: clippy
@@ -13,10 +14,12 @@ repos:
         entry: cargo clippy
         args: ["--", "-D", "warnings"]
         language: system
+        types: [rust]
         pass_filenames: false
       - id: tests
         name: tests
         description: Check that all tests pass
         entry: cargo test
         language: system
+        types: [rust]
         pass_filenames: false
