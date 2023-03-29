@@ -7,3 +7,4 @@ A CHIP-8 emulator in Rust.
 - Install pre-commit hooks with `pre-commit install`.
 - Run tests with `cargo test`.
 - Run the emulator with `cargo run`.
+- Set up optional submodules with `git submodule init && git submodule update`.
