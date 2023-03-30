@@ -57,9 +57,9 @@ mod tests {
 
     #[test]
     fn max_size_rom() {
-        // Since the first 512 bytes are reserved, the expected max
-        // rom size is 4096 - 512.
-        assert_eq!(MAX_ROM_SIZE, 4096 - 512);
+        // Since the first 512 bytes and last 352 bytes are reserved, the expected max
+        // rom size is 4096 - 512 - 352.
+        assert_eq!(MAX_ROM_SIZE, 4096 - 512 - 352);
 
         let max_bytes = [0u8; MAX_ROM_SIZE];
         let res = Rom::from_bytes("test_name", &max_bytes);

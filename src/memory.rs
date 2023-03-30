@@ -1,0 +1,76 @@
+//! The CHIP-8 that ran on the COSMAC VIP had 2048 or 4096 bytes of memory.
+//!
+//! The diagram below shows the layout where CAPACITY is 0x1000 or 0x0800.
+//!
+//! +-----------------------------------------+ 0x000
+//! | CHIP-8 language interpreter (512 bytes) |
+//! +-----------------------------------------+ 0x200
+//! | User program/rom (1184 or 3232 bytes)   |
+//! +-----------------------------------------+ CAPACITY - 256 - 48 - 48
+//! | CHIP-8 stack (48 bytes)                 |
+//! +-----------------------------------------+ CAPACITY - 256 - 48
+//! | CHIP-8 Interpreter work area (48 bytes) |
+//! +-----------------------------------------+ CAPACITY - 256
+//! | Display Refresh (256 bytes)             |
+//! +-----------------------------------------+ CAPACITY
+//!
+//! 4K memory map
+//! +-----------------------------------------+ 0x0000
+//! | CHIP-8 language interpreter (512 bytes) |
+//! +-----------------------------------------+ 0x0200
+//! | User program/rom (1184 or 3232 bytes)   |
+//! +-----------------------------------------+ 0x0EA0
+//! | CHIP-8 stack (48 bytes)                 |
+//! +-----------------------------------------+ 0x0ED0
+//! | CHIP-8 Interpreter work area (48 bytes) |
+//! +-----------------------------------------+ 0x0F00
+//! | Display Refresh (256 bytes)             |
+//! +-----------------------------------------+ 0x1000
+//!
+//! 2K memory map
+//! +-----------------------------------------+ 0x0000
+//! | CHIP-8 language interpreter (512 bytes) |
+//! +-----------------------------------------+ 0x0200
+//! | User program/rom (1184 or 3232 bytes)   |
+//! +-----------------------------------------+ 0x06A0
+//! | CHIP-8 stack (48 bytes)                 |
+//! +-----------------------------------------+ 0x06D0
+//! | CHIP-8 Interpreter work area (48 bytes) |
+//! +-----------------------------------------+ 0x0700
+//! | Display Refresh (256 bytes)             |
+//! +-----------------------------------------+ 0x0800
+const _SMALL_MEMORY_SIZE: usize = 0x0800; // The 2K system
+const _LARGE_MEMORY_SIZE: usize = 0x1000; // The beefier 4K system
+pub const _MEMORY_SIZE: usize = _LARGE_MEMORY_SIZE;
+
+pub const _MEMORY_START_ADDRESS: usize = 0x000;
+pub const ROM_START_ADDRESS: usize = 0x200;
+pub const STACK_START_ADDRESS: usize = 0xEA0;
+pub const _INTERPRETER_START_ADDRESS: usize = 0x0ED0;
+pub const _DISPLAY_REFRESH_START_ADDRESS: usize = 0xF00;
+
+pub const ROM_LAST_ADDRESS: usize = STACK_START_ADDRESS - 1;
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ROM_LAST_ADDRESS, ROM_START_ADDRESS, STACK_START_ADDRESS, _DISPLAY_REFRESH_START_ADDRESS,
+        _INTERPRETER_START_ADDRESS, _MEMORY_SIZE, _MEMORY_START_ADDRESS,
+    };
+
+    #[test]
+    fn memory_boundaries() {
+        assert_eq!(_MEMORY_SIZE, 4096);
+        assert_eq!(_MEMORY_SIZE - _DISPLAY_REFRESH_START_ADDRESS, 256);
+        assert_eq!(
+            _DISPLAY_REFRESH_START_ADDRESS - _INTERPRETER_START_ADDRESS,
+            48
+        );
+        assert_eq!(_INTERPRETER_START_ADDRESS - STACK_START_ADDRESS, 48);
+
+        // ROMS get an extra 2048 bytes when using 4K of RAM instead of 2K.
+        assert_eq!(STACK_START_ADDRESS - ROM_START_ADDRESS, 1184 + 2048);
+        assert_eq!(ROM_LAST_ADDRESS, STACK_START_ADDRESS - 1);
+        assert_eq!(ROM_START_ADDRESS - _MEMORY_START_ADDRESS, 512);
+    }
+}
