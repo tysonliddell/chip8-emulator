@@ -5,16 +5,20 @@ use std::fmt;
 #[derive(Debug, PartialEq)]
 pub enum Error {
     // Io(io::Error),
-    EmptyRom,
-    RomTooLarge(usize),
+    EmptyChip8Program,
+    Chip8ProgramTooLarge(usize),
+    RamOverflow,
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             // Error::Io(err) => write!(f, "IO error: {}", err),
-            Error::EmptyRom => write!(f, "Rom is empty!"),
-            Error::RomTooLarge(size) => write!(f, "Rom with size {} bytes is too large!", size),
+            Error::EmptyChip8Program => write!(f, "CHIP-8 program is empty!"),
+            Error::Chip8ProgramTooLarge(size) => {
+                write!(f, "CHIP-8 program with size {} bytes is too large!", size)
+            }
+            Error::RamOverflow => write!(f, "Operation would cause a write beyond the end of RAM."),
         }
     }
 }

@@ -1,7 +1,7 @@
 // Modules
 mod error;
-mod memory;
-pub mod rom;
+mod interpreter;
+pub mod memory;
 
 // Reexports
 pub use error::Error;
