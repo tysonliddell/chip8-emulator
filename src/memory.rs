@@ -76,16 +76,20 @@
 //!
 //! The last page of RAM is used by the CHIP-8 interpreter for display refresh.
 
-use crate::{Error, Result};
-const _SMALL_MEMORY_SIZE: usize = 0x0800; // The 2K system
-const _LARGE_MEMORY_SIZE: usize = 0x1000; // The beefier 4K system
-pub const MEMORY_SIZE: usize = _LARGE_MEMORY_SIZE;
+use std::ops::Range;
 
-pub const _MEMORY_START_ADDRESS: usize = 0x000;
+use crate::{Error, Result};
+const SMALL_MEMORY_SIZE: usize = 0x0800; // The 2K system
+const LARGE_MEMORY_SIZE: usize = 0x1000; // The beefier 4K system
+pub const MEMORY_SIZE: usize = LARGE_MEMORY_SIZE;
+
+pub const MEMORY_START_ADDRESS: usize = 0x000;
 pub const PROGRAM_START_ADDRESS: usize = 0x200;
 pub const STACK_START_ADDRESS: usize = 0xEA0;
-pub const _INTERPRETER_START_ADDRESS: usize = 0x0ED0;
-pub const _DISPLAY_REFRESH_START_ADDRESS: usize = 0xF00;
+pub const INTERPRETER_WORK_AREA_START_ADDRESS: usize = 0x0ED0;
+pub const DISPLAY_REFRESH_START_ADDRESS: usize = 0xF00;
+pub const NUM_V_REGISTERS: usize = 16;
+pub const V_REGISTERS_START_ADDRESS: usize = DISPLAY_REFRESH_START_ADDRESS - NUM_V_REGISTERS;
 
 pub const PROGRAM_LAST_ADDRESS: usize = STACK_START_ADDRESS - 1;
 pub const PROGRAM_MAX_SIZE: usize = PROGRAM_LAST_ADDRESS - PROGRAM_START_ADDRESS + 1;
@@ -96,7 +100,7 @@ pub struct CosmacRAM {
 }
 
 impl CosmacRAM {
-    /// Create 4K of COSMAC RAM.
+    /// Create 4K of COSMAC RAM, zero-initialized.
     pub fn new() -> Self {
         Self {
             data: [0; MEMORY_SIZE],
@@ -106,6 +110,35 @@ impl CosmacRAM {
     /// A read-only view of the data in RAM.
     pub fn bytes(&self) -> &[u8] {
         &self.data
+    }
+
+    /// Zero out a block of memory addresses.
+    ///
+    /// # Errors
+    /// Returns [`Error::RamOverflow`] if the range extends beyond the address
+    /// space. When this occurs no change is made to the RAM.
+    ///
+    /// # Example
+    /// ```
+    /// # use chip8_emulator::memory::CosmacRAM;
+    /// let mut ram = CosmacRAM::new();
+    /// let bytes = [0xFF; 10];
+    /// ram.load_bytes(&bytes, 0x0100).unwrap();
+    /// ram.zero_out_range(0x0102..0x0106).unwrap();
+    /// assert_eq!(
+    ///     &ram.bytes()[0x0100..0x010A],
+    ///     &[0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF],
+    /// );
+    /// ```
+    pub fn zero_out_range(&mut self, address_range: Range<usize>) -> Result<()> {
+        if address_range.end > MEMORY_SIZE {
+            return Err(Error::RamOverflow);
+        }
+
+        for val in self.data[address_range].iter_mut() {
+            *val = 0;
+        }
+        Ok(())
     }
 
     /// Loads a sequence of bytes into memory starting at the address given by
@@ -136,14 +169,10 @@ impl CosmacRAM {
     /// assert!(ram.load_bytes(&program, MEMORY_SIZE-2).is_ok());
     /// ```
     pub fn load_bytes(&mut self, bytes: &[u8], ram_offset: usize) -> Result<()> {
-        let (target_start, target_end) = (ram_offset, ram_offset + bytes.len());
-        if target_end > MEMORY_SIZE {
+        if ram_offset + bytes.len() > MEMORY_SIZE {
             return Err(Error::RamOverflow);
         }
-
-        let ram_target = &mut self.data[target_start..target_end];
-
-        ram_target.copy_from_slice(bytes);
+        self.data[ram_offset..][..bytes.len()].copy_from_slice(bytes);
         Ok(())
     }
 
@@ -171,13 +200,38 @@ impl CosmacRAM {
             return Err(Error::Chip8ProgramTooLarge(chip8_program.len()));
         }
 
-        self.load_bytes(chip8_program, PROGRAM_START_ADDRESS)
-            .expect("Memory bounds already checked.");
+        self.data[PROGRAM_START_ADDRESS..][..chip8_program.len()].copy_from_slice(chip8_program);
         Ok(())
+    }
+
+    /// Get the slice of RAM that holds the CHIP-8 `VX` registers.
+    pub fn get_v_registers(&self) -> &[u8] {
+        &self.data[V_REGISTERS_START_ADDRESS..][..NUM_V_REGISTERS]
+    }
+
+    /// Get the slice of RAM that holds the CHIP-8 `VX` registers mutably.
+    pub fn get_v_registers_mut(&mut self) -> &mut [u8] {
+        &mut self.data[V_REGISTERS_START_ADDRESS..][..NUM_V_REGISTERS]
+    }
+
+    /// Grab a u16 from two sequential bytes in the COSMAC RAM, which is big endian.
+    /// Does not check alignment of address. Panics if accessing out of bounds memory.
+    pub(crate) fn get_u16_at(&self, address: usize) -> u16 {
+        let bytes: [u8; 2] = (&self.data[address..][..2]).try_into().unwrap();
+        u16::from_be_bytes(bytes)
+    }
+
+    /// Write a u16 to two sequential bytes in the COSMAC RAM in big endian.
+    /// Does not check alignment of address. Panics if accessing out of bounds memory.
+    pub(crate) fn set_u16_at(&mut self, address: usize, value: u16) {
+        let bytes = u16::to_be_bytes(value);
+        self.load_bytes(&bytes, address)
+            .expect("CHIP-8 interpreter should not write beyond bounds of RAM.");
     }
 }
 
 impl Default for CosmacRAM {
+    /// Defaults to zero-initialized RAM.
     fn default() -> Self {
         Self::new()
     }
@@ -189,9 +243,9 @@ mod tests {
     use crate::Error;
 
     use super::{
-        CosmacRAM, MEMORY_SIZE, PROGRAM_LAST_ADDRESS, PROGRAM_MAX_SIZE, PROGRAM_START_ADDRESS,
-        STACK_START_ADDRESS, _DISPLAY_REFRESH_START_ADDRESS, _INTERPRETER_START_ADDRESS,
-        _MEMORY_START_ADDRESS,
+        CosmacRAM, DISPLAY_REFRESH_START_ADDRESS, INTERPRETER_WORK_AREA_START_ADDRESS, MEMORY_SIZE,
+        MEMORY_START_ADDRESS, PROGRAM_LAST_ADDRESS, PROGRAM_MAX_SIZE, PROGRAM_START_ADDRESS,
+        STACK_START_ADDRESS, V_REGISTERS_START_ADDRESS,
     };
 
     /// Convert a slice of `u16` to a vector of `u8` populated in COSMAC byte order.
@@ -204,17 +258,20 @@ mod tests {
     #[test]
     fn memory_boundaries() {
         assert_eq!(MEMORY_SIZE, 4096);
-        assert_eq!(MEMORY_SIZE - _DISPLAY_REFRESH_START_ADDRESS, 256);
+        assert_eq!(MEMORY_SIZE - DISPLAY_REFRESH_START_ADDRESS, 256);
         assert_eq!(
-            _DISPLAY_REFRESH_START_ADDRESS - _INTERPRETER_START_ADDRESS,
+            DISPLAY_REFRESH_START_ADDRESS - INTERPRETER_WORK_AREA_START_ADDRESS,
             48
         );
-        assert_eq!(_INTERPRETER_START_ADDRESS - STACK_START_ADDRESS, 48);
+        assert_eq!(
+            INTERPRETER_WORK_AREA_START_ADDRESS - STACK_START_ADDRESS,
+            48
+        );
 
         // CHIP-8 programs are allowed to use an extra 2048 bytes when using 4K of RAM instead of 2K.
         assert_eq!(STACK_START_ADDRESS - PROGRAM_START_ADDRESS, 1184 + 2048);
         assert_eq!(PROGRAM_LAST_ADDRESS, STACK_START_ADDRESS - 1);
-        assert_eq!(PROGRAM_START_ADDRESS - _MEMORY_START_ADDRESS, 512);
+        assert_eq!(PROGRAM_START_ADDRESS - MEMORY_START_ADDRESS, 512);
     }
 
     #[test]
@@ -236,6 +293,33 @@ mod tests {
 
         assert_eq!(ram.data[0], 0xA3, "TEST!");
         assert_eq!(ram.data[1], 0x00, "TEST!");
+    }
+
+    #[test]
+    fn zero_out_memory() {
+        let mut ram = CosmacRAM::new();
+        let bytes = [0xFF; 10];
+        ram.load_bytes(&bytes, 0x0100)
+            .expect("Should be ok to write to this address range.");
+        ram.zero_out_range(0x0102..0x0106)
+            .expect("Should be ok to zero out this address range.");
+        assert_eq!(
+            &ram.bytes()[0x0100..0x010A],
+            &[0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF],
+        )
+    }
+
+    #[test]
+    fn zero_out_memory_error() {
+        let mut ram = CosmacRAM::new();
+        ram.zero_out_range(0x0000..MEMORY_SIZE)
+            .expect("Should be ok to zero out this address range.");
+
+        let err = ram
+            .zero_out_range(0x0000..MEMORY_SIZE + 1)
+            .expect_err("Should get an error when zeroing beyond address space.");
+
+        assert_eq!(Error::RamOverflow, err);
     }
 
     #[test]
@@ -301,5 +385,26 @@ mod tests {
         let data = [0x1122, 0x3344];
         let bytes = cosmac_bytes_from_u16(&data);
         assert_eq!(bytes, [0x11, 0x22, 0x33, 0x44]);
+    }
+
+    #[test]
+    fn get_v_registers() {
+        let mut ram = CosmacRAM::new();
+        let bytes = [0x11, 0x22, 0x33, 0x44, 0x55];
+        ram.load_bytes(&bytes, V_REGISTERS_START_ADDRESS)
+            .expect("Data should fit into RAM.");
+
+        #[rustfmt::skip]
+        assert_eq!(
+            &ram.get_v_registers(),
+            &[
+                0x11, 0x22, 0x33, 0x44, 0x55, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+            ],
+        );
+
+        let mut_registers = ram.get_v_registers_mut();
+        mut_registers[1] = 0x42;
+        assert_eq!(&ram.get_v_registers()[..3], &[0x11, 0x42, 0x33]);
     }
 }

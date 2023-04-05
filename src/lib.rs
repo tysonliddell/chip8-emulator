@@ -1,3 +1,7 @@
+// TODO: Do not allow unused code. This is here to keep pre-commit hooks happy
+// while developing.
+#![allow(unused)]
+
 // Modules
 mod error;
 mod interpreter;
