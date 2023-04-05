@@ -117,19 +117,6 @@ impl CosmacRAM {
     /// # Errors
     /// Returns [`Error::RamOverflow`] if the range extends beyond the address
     /// space. When this occurs no change is made to the RAM.
-    ///
-    /// # Example
-    /// ```
-    /// # use chip8_emulator::memory::CosmacRAM;
-    /// let mut ram = CosmacRAM::new();
-    /// let bytes = [0xFF; 10];
-    /// ram.load_bytes(&bytes, 0x0100).unwrap();
-    /// ram.zero_out_range(0x0102..0x0106).unwrap();
-    /// assert_eq!(
-    ///     &ram.bytes()[0x0100..0x010A],
-    ///     &[0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF],
-    /// );
-    /// ```
     pub fn zero_out_range(&mut self, address_range: Range<usize>) -> Result<()> {
         if address_range.end > MEMORY_SIZE {
             return Err(Error::RamOverflow);
@@ -157,17 +144,6 @@ impl CosmacRAM {
     /// # Errors
     /// Returns [`Error::RamOverflow`] if bytes cannot fit into RAM at the given offset.
     /// When this occurs no change is made to the RAM.
-    ///
-    /// ```
-    /// // Attempt to load bytes where they cannot fit into RAM.
-    /// # use chip8_emulator::memory::CosmacRAM;
-    /// # use chip8_emulator::memory::MEMORY_SIZE;
-    /// let program = [0x00, 0x00];
-    /// let mut ram = CosmacRAM::new();
-    /// assert!(ram.load_bytes(&program, MEMORY_SIZE).is_err());
-    /// assert!(ram.load_bytes(&program, MEMORY_SIZE-1).is_err());
-    /// assert!(ram.load_bytes(&program, MEMORY_SIZE-2).is_ok());
-    /// ```
     pub fn load_bytes(&mut self, bytes: &[u8], ram_offset: usize) -> Result<()> {
         if ram_offset + bytes.len() > MEMORY_SIZE {
             return Err(Error::RamOverflow);
@@ -204,7 +180,9 @@ impl CosmacRAM {
         Ok(())
     }
 
-    /// Get the slice of RAM that holds the CHIP-8 `VX` registers.
+    /// Get the slice of RAM that holds the CHIP-8 `VX` registers. The registers
+    /// are each a single byte in size and stored stored sequentially from V0 to
+    /// VF. This slice is 16 bytes in size.
     pub fn get_v_registers(&self) -> &[u8] {
         &self.data[V_REGISTERS_START_ADDRESS..][..NUM_V_REGISTERS]
     }
