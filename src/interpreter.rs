@@ -157,26 +157,26 @@ impl Chip8Interpreter {
                     next_instruction_address = next_instruction_address.wrapping_add(2);
                 }
             }
-            // op if op & 0xF000 == 0x5000 => {
-            //     // Skip if VX == VY
-            //     let x = (op & 0x0F00) >> 16;
-            //     let y = (op & 0x00F0) >> 8;
-            //     let vx = ram.get_v_registers()[x as usize];
-            //     let vy = ram.get_v_registers()[y as usize];
-            //     if vx == vy {
-            //         next_instruction_address = next_instruction_address.wrapping_add(2);
-            //     }
-            // }
-            // op if op & 0xF000 == 0x9000 => {
-            //     // Skip if VX != VY
-            //     let x = (op & 0x0F00) >> 16;
-            //     let y = (op & 0x00F0) >> 8;
-            //     let vx = ram.get_v_registers()[x as usize];
-            //     let vy = ram.get_v_registers()[y as usize];
-            //     if vx != vy {
-            //         next_instruction_address = next_instruction_address.wrapping_add(2);
-            //     }
-            // }
+            op if op & 0xF00F == 0x5000 => {
+                // Skip if VX == VY
+                let x = (op & 0x0F00) >> 8;
+                let y = (op & 0x00F0) >> 4;
+                let vx = ram.get_v_registers()[x as usize];
+                let vy = ram.get_v_registers()[y as usize];
+                if vx == vy {
+                    next_instruction_address = next_instruction_address.wrapping_add(2);
+                }
+            }
+            op if op & 0xF00F == 0x9000 => {
+                // Skip if VX != VY
+                let x = (op & 0x0F00) >> 8;
+                let y = (op & 0x00F0) >> 4;
+                let vx = ram.get_v_registers()[x as usize];
+                let vy = ram.get_v_registers()[y as usize];
+                if vx != vy {
+                    next_instruction_address = next_instruction_address.wrapping_add(2);
+                }
+            }
             // op if op & 0xF0FF == 0xE09E => {
             //     // Skip if VX == Hex key (LSB)
             //     let x = (op & 0x0F00) >> 16;
@@ -507,7 +507,7 @@ mod tests {
     }
 
     #[test]
-    fn skip_if_eq() {
+    fn skip_instruction_if_vx_eq_kk() {
         let ram = &mut CosmacRAM::new();
         let chip8 = &Chip8Interpreter::new();
 
@@ -527,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn skip_if_neq() {
+    fn skip_instruction_if_vx_neq_kk() {
         let ram = &mut CosmacRAM::new();
         let chip8 = &Chip8Interpreter::new();
 
@@ -544,5 +544,65 @@ mod tests {
 
         let expected_address_sequence = [0x0200, 0x0202, 0x0206].into_iter();
         assert_address_sequence(expected_address_sequence, chip8, ram);
+    }
+
+    #[test]
+    fn skip_instruction_if_vx_eq_vy() {
+        let ram = &mut CosmacRAM::new();
+        let chip8 = &Chip8Interpreter::new();
+
+        let program = chip8_program_into_bytes!(
+            0x5120
+            NOOP
+            NOOP
+        );
+        ram.load_chip8_program(&program)
+            .expect("Should be ok to load this small program.");
+
+        // V0 != V1
+        chip8.reset(ram);
+        ram.get_v_registers_mut()[1] = 0x11;
+        ram.get_v_registers_mut()[2] = 0x22;
+
+        chip8.step(ram);
+        assert_eq!(0x0202, ram.get_u16_at(PROGRAM_COUNTER_ADDRESS));
+
+        // V0 == V1
+        chip8.reset(ram);
+        ram.get_v_registers_mut()[1] = 0x11;
+        ram.get_v_registers_mut()[2] = 0x11;
+
+        chip8.step(ram);
+        assert_eq!(0x0204, ram.get_u16_at(PROGRAM_COUNTER_ADDRESS));
+    }
+
+    #[test]
+    fn skip_instruction_if_vx_neq_vy() {
+        let ram = &mut CosmacRAM::new();
+        let chip8 = &Chip8Interpreter::new();
+
+        let program = chip8_program_into_bytes!(
+            0x9120
+            NOOP
+            NOOP
+        );
+        ram.load_chip8_program(&program)
+            .expect("Should be ok to load this small program.");
+
+        // V0 == V1
+        chip8.reset(ram);
+        ram.get_v_registers_mut()[1] = 0x11;
+        ram.get_v_registers_mut()[2] = 0x11;
+
+        chip8.step(ram);
+        assert_eq!(0x0202, ram.get_u16_at(PROGRAM_COUNTER_ADDRESS));
+
+        // V0 != V1
+        chip8.reset(ram);
+        ram.get_v_registers_mut()[1] = 0x11;
+        ram.get_v_registers_mut()[2] = 0x22;
+
+        chip8.step(ram);
+        assert_eq!(0x0204, ram.get_u16_at(PROGRAM_COUNTER_ADDRESS));
     }
 }
