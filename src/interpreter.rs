@@ -13,14 +13,15 @@ use crate::{
     },
 };
 
-pub struct Chip8State {
+pub struct Chip8State<'a> {
     pub program_counter: u16,
     pub instruction: u16,
     pub i: u16,
     pub stack_pointer: u16,
+    pub v_registers: &'a [u8],
 }
 
-impl Debug for Chip8State {
+impl<'a> Debug for Chip8State<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Chip8State")
             .field(
@@ -30,6 +31,22 @@ impl Debug for Chip8State {
             .field("instruction", &format!("0x{:0>4X}", self.instruction))
             .field("i", &format!("0x{:0>4X}", self.i))
             .field("stack_pointer", &format!("0x{:0>4X}", self.stack_pointer))
+            .field("V0", &format!("0x{:0>4X}", self.v_registers[0]))
+            .field("V1", &format!("0x{:0>4X}", self.v_registers[1]))
+            .field("V2", &format!("0x{:0>4X}", self.v_registers[2]))
+            .field("V3", &format!("0x{:0>4X}", self.v_registers[3]))
+            .field("V4", &format!("0x{:0>4X}", self.v_registers[4]))
+            .field("V5", &format!("0x{:0>4X}", self.v_registers[5]))
+            .field("V6", &format!("0x{:0>4X}", self.v_registers[6]))
+            .field("V7", &format!("0x{:0>4X}", self.v_registers[7]))
+            .field("V8", &format!("0x{:0>4X}", self.v_registers[8]))
+            .field("V9", &format!("0x{:0>4X}", self.v_registers[9]))
+            .field("VA", &format!("0x{:0>4X}", self.v_registers[10]))
+            .field("VB", &format!("0x{:0>4X}", self.v_registers[11]))
+            .field("VC", &format!("0x{:0>4X}", self.v_registers[12]))
+            .field("VD", &format!("0x{:0>4X}", self.v_registers[13]))
+            .field("VE", &format!("0x{:0>4X}", self.v_registers[14]))
+            .field("VF", &format!("0x{:0>4X}", self.v_registers[15]))
             .finish()
     }
 }
@@ -122,24 +139,24 @@ impl Chip8Interpreter {
                 // Jump
                 next_instruction_address = caller_address as usize + 2;
             }
-            // op if op & 0xF000 == 0x3000 => {
-            //     // Skip if VX == constant
-            //     let x = (op & 0x0F00) >> 16;
-            //     let vx = ram.get_v_registers()[x as usize];
-            //     let constant = (op & 0x00FF) as u8;
-            //     if vx == constant {
-            //         next_instruction_address = next_instruction_address.wrapping_add(2);
-            //     }
-            // }
-            // op if op & 0xF000 == 0x4000 => {
-            //     // Skip if VX != constant
-            //     let x = (op & 0x0F00) >> 16;
-            //     let vx = ram.get_v_registers()[x as usize];
-            //     let constant = (op & 0x00FF) as u8;
-            //     if vx != constant {
-            //         next_instruction_address = next_instruction_address.wrapping_add(2);
-            //     }
-            // }
+            op if op & 0xF000 == 0x3000 => {
+                // Skip if VX == constant
+                let x = (op & 0x0F00) >> 8;
+                let vx = ram.get_v_registers()[x as usize];
+                let constant = (op & 0x00FF) as u8;
+                if vx == constant {
+                    next_instruction_address = next_instruction_address.wrapping_add(2);
+                }
+            }
+            op if op & 0xF000 == 0x4000 => {
+                // Skip if VX != constant
+                let x = (op & 0x0F00) >> 8;
+                let vx = ram.get_v_registers()[x as usize];
+                let constant = (op & 0x00FF) as u8;
+                if vx != constant {
+                    next_instruction_address = next_instruction_address.wrapping_add(2);
+                }
+            }
             // op if op & 0xF000 == 0x5000 => {
             //     // Skip if VX == VY
             //     let x = (op & 0x0F00) >> 16;
@@ -333,6 +350,7 @@ impl Chip8Interpreter {
             instruction: ram.get_u16_at(pc as usize),
             i: ram.get_u16_at(I_ADDRESS),
             stack_pointer: ram.get_u16_at(STACK_POINTER_ADDRESS),
+            v_registers: ram.get_v_registers(),
         }
     }
 }
@@ -348,6 +366,18 @@ mod tests {
     };
 
     use super::Chip8Interpreter;
+
+    // Checks that a section of a CHIP-8 program steps through a sequence of
+    // instruction addresses
+    fn assert_address_sequence<I>(addresses: I, chip8: &Chip8Interpreter, ram: &mut CosmacRAM)
+    where
+        I: Iterator<Item = u16>,
+    {
+        for address in addresses {
+            assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), address);
+            chip8.step(ram);
+        }
+    }
 
     #[test]
     fn jump() {
@@ -411,11 +441,8 @@ mod tests {
             .expect("Should be ok to load this small program.");
         chip8.reset(&mut ram);
 
-        let expected_address_sequence = [0x0200u16, 0x0204, 0x0206, 0x0202, 0x0208];
-        for address in expected_address_sequence {
-            assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), address);
-            chip8.step(&mut ram);
-        }
+        let expected_address_sequence = [0x0200u16, 0x0204, 0x0206, 0x0202, 0x0208].into_iter();
+        assert_address_sequence(expected_address_sequence, &chip8, &mut ram);
     }
 
     #[test]
@@ -476,9 +503,46 @@ mod tests {
             .chain(unwinding_the_stack)
             .chain(final_jump);
 
-        for address in expected_address_sequence {
-            assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), address);
-            chip8.step(&mut ram);
-        }
+        assert_address_sequence(expected_address_sequence, &chip8, &mut ram);
+    }
+
+    #[test]
+    fn skip_if_eq() {
+        let ram = &mut CosmacRAM::new();
+        let chip8 = &Chip8Interpreter::new();
+
+        let program = chip8_program_into_bytes!(
+            0x3744  // 44 != 55, no skip expected
+            0x3755  // 44 == 55, skip expected
+            NOOP
+            NOOP
+        );
+        ram.load_chip8_program(&program)
+            .expect("Should be ok to load this small program.");
+        chip8.reset(ram);
+        ram.get_v_registers_mut()[7] = 0x55;
+
+        let expected_address_sequence = [0x0200, 0x0202, 0x0206].into_iter();
+        assert_address_sequence(expected_address_sequence, chip8, ram);
+    }
+
+    #[test]
+    fn skip_if_neq() {
+        let ram = &mut CosmacRAM::new();
+        let chip8 = &Chip8Interpreter::new();
+
+        let program = chip8_program_into_bytes!(
+            0x4744  // 44 == 44, no skip expected
+            0x4755  // 55 != 44, skip expected
+            NOOP
+            NOOP
+        );
+        ram.load_chip8_program(&program)
+            .expect("Should be ok to load this small program.");
+        chip8.reset(ram);
+        ram.get_v_registers_mut()[7] = 0x44;
+
+        let expected_address_sequence = [0x0200, 0x0202, 0x0206].into_iter();
+        assert_address_sequence(expected_address_sequence, chip8, ram);
     }
 }
