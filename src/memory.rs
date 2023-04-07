@@ -226,13 +226,6 @@ mod tests {
         STACK_START_ADDRESS, V_REGISTERS_START_ADDRESS,
     };
 
-    /// Convert a slice of `u16` to a vector of `u8` populated in COSMAC byte order.
-    /// This is useful when moving an array of 16-bit CHIP-8 instruction literals
-    /// (stored as `u16`s) into the 8-bit [`CosmacRAM`], which is big endian.
-    fn cosmac_bytes_from_u16(data: &[u16]) -> Vec<u8> {
-        data.iter().copied().flat_map(u16::to_be_bytes).collect()
-    }
-
     #[test]
     fn memory_boundaries() {
         assert_eq!(MEMORY_SIZE, 4096);
@@ -263,8 +256,9 @@ mod tests {
 
     #[test]
     fn load_into_ram() {
-        let program = [0xA300u16, 0x6080, 0xF055, 0x6000, 0xA300, 0xD001, 0x120C];
-        let program = cosmac_bytes_from_u16(&program);
+        let program = chip8_program_into_bytes!(
+            0xA300 0x6080 0xF055 0x6000 0xA300 0xD001 0x120C
+        );
 
         let mut ram = CosmacRAM::new();
         assert!(ram.load_bytes(&program, 0).is_ok());
@@ -360,8 +354,7 @@ mod tests {
 
     #[test]
     fn u16_to_u8_conversion() {
-        let data = [0x1122, 0x3344];
-        let bytes = cosmac_bytes_from_u16(&data);
+        let bytes = chip8_program_into_bytes!(0x1122 0x3344);
         assert_eq!(bytes, [0x11, 0x22, 0x33, 0x44]);
     }
 
