@@ -1,7 +1,5 @@
 use std::fmt::{self, Debug};
 
-use fastrand::Rng;
-
 use crate::{
     debug::{
         panic_if_chip8_stack_empty_on_subroutine_return, panic_if_chip8_stack_full,
@@ -11,6 +9,7 @@ use crate::{
         CosmacRAM, INTERPRETER_WORK_AREA_START_ADDRESS, MEMORY_SIZE, PROGRAM_LAST_ADDRESS,
         PROGRAM_START_ADDRESS, STACK_START_ADDRESS,
     },
+    rng::Chip8Rng,
 };
 
 pub struct Chip8State<'a> {
@@ -51,10 +50,6 @@ impl<'a> Debug for Chip8State<'a> {
     }
 }
 
-pub struct Chip8Interpreter {
-    rng: Rng,
-}
-
 // Program counter address
 pub(crate) const PROGRAM_COUNTER_ADDRESS: usize = INTERPRETER_WORK_AREA_START_ADDRESS;
 pub(crate) const I_ADDRESS: usize = INTERPRETER_WORK_AREA_START_ADDRESS + 2;
@@ -64,9 +59,13 @@ pub(crate) const STACK_POINTER_ADDRESS: usize = INTERPRETER_WORK_AREA_START_ADDR
 // Value of 0x000X means hex key X was last key pressed (no key currently depressed)
 pub(crate) const HEX_KEY_STATUS_ADDRESS: usize = INTERPRETER_WORK_AREA_START_ADDRESS + 6;
 
-impl Chip8Interpreter {
-    pub fn new() -> Self {
-        Self { rng: Rng::new() }
+pub struct Chip8Interpreter<T: Chip8Rng = fastrand::Rng> {
+    rng: T,
+}
+
+impl<T: Chip8Rng> Chip8Interpreter<T> {
+    pub fn new(rng: T) -> Self {
+        Self { rng }
     }
 
     pub fn reset(&self, ram: &mut CosmacRAM) {
@@ -186,7 +185,7 @@ impl Chip8Interpreter {
                 let x = (op & 0x0F00) >> 8;
                 let vx = ram.get_v_registers()[x as usize];
                 let vx_lsb = vx & 0x0F;
-                let key: Option<u8> = Chip8Interpreter::get_key_press(ram);
+                let key: Option<u8> = Self::get_key_press(ram);
                 if key.is_some() && key.unwrap() == vx_lsb {
                     next_instruction_address = next_instruction_address.wrapping_add(2);
                 }
@@ -196,26 +195,28 @@ impl Chip8Interpreter {
                 let x = (op & 0x0F00) >> 8;
                 let vx = ram.get_v_registers()[x as usize];
                 let vx_lsb = vx & 0x0F;
-                let key: Option<u8> = Chip8Interpreter::get_key_press(ram);
+                let key: Option<u8> = Self::get_key_press(ram);
                 if key.is_none() || key.unwrap() != vx_lsb {
                     next_instruction_address = next_instruction_address.wrapping_add(2);
                 }
             }
-            // op if op & 0xF000 == 0x6000 => {
-            //     // Set VX = constant
-            //     let x = (op & 0x0F00) >> 16;
-            //     let vx = &mut ram.get_v_registers_mut()[x as usize];
-            //     let constant = (op & 0x00FF) as u8;
-            //     *vx = constant;
-            // }
-            // op if op & 0xF000 == 0xC000 => {
-            //     // Set VX = random bits.
-            //     let x = (op & 0x0F00) >> 16;
-            //     let vx = &mut ram.get_v_registers_mut()[x as usize];
-            //     let mask = (op & 0x00FF) as u8;
-            //     let random_bits = self.rng.u8(..);
-            //     *vx = mask & random_bits;
-            // }
+            op if op & 0xF000 == 0x6000 => {
+                // Set VX = constant
+                let x = (op & 0x0F00) >> 8;
+                let constant = (op & 0x00FF) as u8;
+
+                let vx = &mut ram.get_v_registers_mut()[x as usize];
+                *vx = constant;
+            }
+            op if op & 0xF000 == 0xC000 => {
+                // Set VX = random bits.
+                let x = (op & 0x0F00) >> 8;
+                let mask = (op & 0x00FF) as u8;
+
+                let vx = &mut ram.get_v_registers_mut()[x as usize];
+                let random_bits = self.rng.random_u8();
+                *vx = mask & random_bits;
+            }
             // op if op & 0xF000 == 0x7000 => {
             //     // Set VX += constant
             //     let x = (op & 0x0F00) >> 16;
@@ -375,6 +376,7 @@ mod tests {
     use crate::{
         interpreter::{HEX_KEY_STATUS_ADDRESS, PROGRAM_COUNTER_ADDRESS},
         memory::{CosmacRAM, PROGRAM_START_ADDRESS},
+        rng::MockChip8Rng,
         test_utils,
     };
 
@@ -382,8 +384,11 @@ mod tests {
 
     // Checks that a section of a CHIP-8 program steps through a sequence of
     // instruction addresses
-    fn assert_address_sequence<I>(addresses: I, chip8: &Chip8Interpreter, ram: &mut CosmacRAM)
-    where
+    fn assert_address_sequence<I>(
+        addresses: I,
+        chip8: &Chip8Interpreter<MockChip8Rng>,
+        ram: &mut CosmacRAM,
+    ) where
         I: Iterator<Item = u16>,
     {
         for address in addresses {
@@ -394,37 +399,19 @@ mod tests {
 
     // Get a new CHIP-8 interpreter and RAM, reset and loaded with the provided
     // CHIP-8 program.
-    fn new_chip8_with_program(program: &[u8]) -> (CosmacRAM, Chip8Interpreter) {
+    fn new_chip8_with_program(program: &[u8]) -> (CosmacRAM, Chip8Interpreter<MockChip8Rng>) {
+        let rng = MockChip8Rng::new();
         let mut ram = CosmacRAM::new();
-        let chip8 = Chip8Interpreter::new();
+        let chip8 = Chip8Interpreter::new(rng);
         ram.load_chip8_program(&program)
-            .expect("Should be ok to load this small program.");
+            .expect("Should be ok to load this test program.");
         chip8.reset(&mut ram);
         (ram, chip8)
     }
 
     #[test]
     fn jump() {
-        let mut ram = CosmacRAM::new();
-        let chip8 = Chip8Interpreter::new();
-
-        ram.load_chip8_program(&chip8_program_into_bytes!(0x1234))
-            .expect("Should be ok to load this small program.");
-        chip8.reset(&mut ram);
-
-        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x0200);
-        chip8.step(&mut ram);
-        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x0234);
-    }
-
-    #[test]
-    fn jump_out_of_bounds() {
-        let mut ram = CosmacRAM::new();
-        let chip8 = Chip8Interpreter::new();
-
-        ram.load_chip8_program(&chip8_program_into_bytes!(0x1234))
-            .expect("Should be ok to load this small program.");
-        chip8.reset(&mut ram);
+        let (mut ram, chip8) = new_chip8_with_program(&chip8_program_into_bytes!(0x1234));
 
         assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x0200);
         chip8.step(&mut ram);
@@ -433,12 +420,7 @@ mod tests {
 
     #[test]
     fn unconditional_jump_with_offset() {
-        let mut ram = CosmacRAM::new();
-        let chip8 = Chip8Interpreter::new();
-
-        ram.load_chip8_program(&chip8_program_into_bytes!(0xB234))
-            .expect("Should be ok to load this small program.");
-        chip8.reset(&mut ram);
+        let (mut ram, chip8) = new_chip8_with_program(&chip8_program_into_bytes!(0xB234));
 
         let v0 = &mut ram.get_v_registers_mut()[0];
         *v0 = 0xAA;
@@ -450,20 +432,13 @@ mod tests {
 
     #[test]
     fn subroutine() {
-        let mut ram = CosmacRAM::new();
-        let chip8 = Chip8Interpreter::new();
-
-        let program = chip8_program_into_bytes!(
+        let (mut ram, chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
             0x2204  // 0x0200, jump to 0x0204 subroutine
             0x1208  // 0x0202, jump to end of program
             NOOP    // 0x0204
             0x00EE  // 0x0206, return from subroutine
             NOOP    // 0x0208
-        );
-
-        ram.load_chip8_program(&program)
-            .expect("Should be ok to load this small program.");
-        chip8.reset(&mut ram);
+        ));
 
         let expected_address_sequence = [0x0200u16, 0x0204, 0x0206, 0x0202, 0x0208].into_iter();
         assert_address_sequence(expected_address_sequence, &chip8, &mut ram);
@@ -471,12 +446,9 @@ mod tests {
 
     #[test]
     fn nested_subroutines() {
-        let mut ram = CosmacRAM::new();
-        let chip8 = Chip8Interpreter::new();
-
-        // a program the dives into 12 nested subroutines then immediately
-        // returns from each.
-        let program = chip8_program_into_bytes!(
+        let (mut ram, chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+            // a program the dives into 12 nested subroutines then immediately
+            // returns from each.
             0x2204      // 0x0200
             0x1232      // 0x0202
             0x2208      // 0x0204
@@ -503,11 +475,7 @@ mod tests {
             0x00EE
             0x00EE
             NOOP        // 0x0232
-        );
-
-        ram.load_chip8_program(&program)
-            .expect("Should be ok to load this small program.");
-        chip8.reset(&mut ram);
+        ));
 
         // build an iterator of the sequence of all instruction addresses
         // expected when running the program
@@ -532,101 +500,81 @@ mod tests {
 
     #[test]
     fn skip_instruction_if_vx_eq_kk() {
-        let ram = &mut CosmacRAM::new();
-        let chip8 = &Chip8Interpreter::new();
-
-        let program = chip8_program_into_bytes!(
+        let (mut ram, chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
             0x3744  // 44 != 55, no skip expected
             0x3755  // 44 == 55, skip expected
             NOOP
             NOOP
-        );
-        ram.load_chip8_program(&program)
-            .expect("Should be ok to load this small program.");
-        chip8.reset(ram);
+        ));
+
         ram.get_v_registers_mut()[7] = 0x55;
 
         let expected_address_sequence = [0x0200, 0x0202, 0x0206].into_iter();
-        assert_address_sequence(expected_address_sequence, chip8, ram);
+        assert_address_sequence(expected_address_sequence, &chip8, &mut ram);
     }
 
     #[test]
     fn skip_instruction_if_vx_neq_kk() {
-        let ram = &mut CosmacRAM::new();
-        let chip8 = &Chip8Interpreter::new();
-
-        let program = chip8_program_into_bytes!(
+        let (mut ram, chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
             0x4744  // 44 == 44, no skip expected
             0x4755  // 55 != 44, skip expected
             NOOP
             NOOP
-        );
-        ram.load_chip8_program(&program)
-            .expect("Should be ok to load this small program.");
-        chip8.reset(ram);
+        ));
+
         ram.get_v_registers_mut()[7] = 0x44;
 
         let expected_address_sequence = [0x0200, 0x0202, 0x0206].into_iter();
-        assert_address_sequence(expected_address_sequence, chip8, ram);
+        assert_address_sequence(expected_address_sequence, &chip8, &mut ram);
     }
 
     #[test]
     fn skip_instruction_if_vx_eq_vy() {
-        let ram = &mut CosmacRAM::new();
-        let chip8 = &Chip8Interpreter::new();
-
-        let program = chip8_program_into_bytes!(
+        let (mut ram, chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
             0x5120
             NOOP
             NOOP
-        );
-        ram.load_chip8_program(&program)
-            .expect("Should be ok to load this small program.");
+        ));
 
         // V0 != V1
-        chip8.reset(ram);
+        chip8.reset(&mut ram);
         ram.get_v_registers_mut()[1] = 0x11;
         ram.get_v_registers_mut()[2] = 0x22;
 
-        chip8.step(ram);
+        chip8.step(&mut ram);
         assert_eq!(0x0202, ram.get_u16_at(PROGRAM_COUNTER_ADDRESS));
 
         // V0 == V1
-        chip8.reset(ram);
+        chip8.reset(&mut ram);
         ram.get_v_registers_mut()[1] = 0x11;
         ram.get_v_registers_mut()[2] = 0x11;
 
-        chip8.step(ram);
+        chip8.step(&mut ram);
         assert_eq!(0x0204, ram.get_u16_at(PROGRAM_COUNTER_ADDRESS));
     }
 
     #[test]
     fn skip_instruction_if_vx_neq_vy() {
-        let ram = &mut CosmacRAM::new();
-        let chip8 = &Chip8Interpreter::new();
-
-        let program = chip8_program_into_bytes!(
+        let (mut ram, chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
             0x9120
             NOOP
             NOOP
-        );
-        ram.load_chip8_program(&program)
-            .expect("Should be ok to load this small program.");
+        ));
 
         // V0 == V1
-        chip8.reset(ram);
+        chip8.reset(&mut ram);
         ram.get_v_registers_mut()[1] = 0x11;
         ram.get_v_registers_mut()[2] = 0x11;
 
-        chip8.step(ram);
+        chip8.step(&mut ram);
         assert_eq!(0x0202, ram.get_u16_at(PROGRAM_COUNTER_ADDRESS));
 
         // V0 != V1
-        chip8.reset(ram);
+        chip8.reset(&mut ram);
         ram.get_v_registers_mut()[1] = 0x11;
         ram.get_v_registers_mut()[2] = 0x22;
 
-        chip8.step(ram);
+        chip8.step(&mut ram);
         assert_eq!(0x0204, ram.get_u16_at(PROGRAM_COUNTER_ADDRESS));
     }
 
@@ -750,5 +698,36 @@ mod tests {
 
         chip8.step(&mut ram);
         assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x0204);
+    }
+
+    #[test]
+    fn set_vx_register_constant() {
+        let (mut ram, chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+            0x6499
+            NOOP
+        ));
+
+        assert_eq!(ram.get_v_registers()[4], 0x00);
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_v_registers()[4], 0x99);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
+    }
+
+    #[test]
+    fn set_vx_register_random() {
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+            0xC4A5
+            NOOP
+        ));
+
+        chip8.rng.expect_random_u8().return_const(0b0111_0111);
+
+        // 0xC4A5 gives a bitmask  -> 1010_0101
+        // random pattern from rng -> 0111_0111
+        // expected result ---------> 0010_0101
+        assert_eq!(ram.get_v_registers()[4], 0x00);
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_v_registers()[4], 0b0010_0101);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
     }
 }

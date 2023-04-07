@@ -10,6 +10,7 @@ mod test_utils;
 mod error;
 mod interpreter;
 pub mod memory;
+mod rng;
 
 // Reexports
 pub use error::Error;
