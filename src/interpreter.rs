@@ -1,17 +1,47 @@
+use std::fmt::{self, Debug};
+
 use fastrand::Rng;
 
-use crate::memory::{
-    CosmacRAM, INTERPRETER_WORK_AREA_START_ADDRESS, MEMORY_SIZE, PROGRAM_START_ADDRESS,
-    STACK_START_ADDRESS,
+use crate::{
+    debug::{
+        panic_if_chip8_stack_empty_on_subroutine_return, panic_if_chip8_stack_full,
+        panic_if_pc_address_not_in_chip8_program_range,
+    },
+    memory::{
+        CosmacRAM, INTERPRETER_WORK_AREA_START_ADDRESS, MEMORY_SIZE, PROGRAM_LAST_ADDRESS,
+        PROGRAM_START_ADDRESS, STACK_START_ADDRESS,
+    },
 };
+
+pub struct Chip8State {
+    pub program_counter: u16,
+    pub instruction: u16,
+    pub i: u16,
+    pub stack_pointer: u16,
+}
+
+impl Debug for Chip8State {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Chip8State")
+            .field(
+                "program_counter",
+                &format!("0x{:0>4X}", self.program_counter),
+            )
+            .field("instruction", &format!("0x{:0>4X}", self.instruction))
+            .field("i", &format!("0x{:0>4X}", self.i))
+            .field("stack_pointer", &format!("0x{:0>4X}", self.stack_pointer))
+            .finish()
+    }
+}
 
 pub struct Chip8Interpreter {
     rng: Rng,
 }
 
 // Program counter address
-const PROGRAM_COUNTER_ADDRESS: usize = INTERPRETER_WORK_AREA_START_ADDRESS;
-const I_ADDRESS: usize = INTERPRETER_WORK_AREA_START_ADDRESS + 2;
+pub(crate) const PROGRAM_COUNTER_ADDRESS: usize = INTERPRETER_WORK_AREA_START_ADDRESS;
+pub(crate) const I_ADDRESS: usize = INTERPRETER_WORK_AREA_START_ADDRESS + 2;
+pub(crate) const STACK_POINTER_ADDRESS: usize = INTERPRETER_WORK_AREA_START_ADDRESS + 4;
 
 impl Chip8Interpreter {
     pub fn new() -> Self {
@@ -24,6 +54,7 @@ impl Chip8Interpreter {
             .expect("Should be ok to zero out this memory");
 
         ram.set_u16_at(PROGRAM_COUNTER_ADDRESS, PROGRAM_START_ADDRESS as u16);
+        ram.set_u16_at(STACK_POINTER_ADDRESS, STACK_START_ADDRESS as u16);
     }
 
     /// Execute the current CHIP-8 instruction, determined by the internal
@@ -39,36 +70,58 @@ impl Chip8Interpreter {
     /// # Bad programs
     /// - Out of bounds memory?
     /// - looping forever?
-    /// -
     pub fn step(&self, ram: &mut CosmacRAM) {
+        #[cfg(debug_assertions)]
+        dbg!(Self::get_state(ram));
+
         let instruction_address = ram.get_u16_at(PROGRAM_COUNTER_ADDRESS) as usize;
         let instruction = ram.get_u16_at(instruction_address);
-        // let instruction = &ram.bytes()[instruction_address..instruction_address+2];
-        // let (op1, op2) = (instruction[0], instruction[1]);
-
         let mut next_instruction_address = instruction_address.wrapping_add(2);
 
         match instruction {
+            op if op == 0x7000 => {
+                // NOOP
+            }
             op if op & 0xF000 == 0x1000 => {
                 // Unconditional jump
                 let dest = op & 0x0FFF;
                 next_instruction_address = dest as usize;
             }
-            // op if op & 0xF000 == 0xB000 => {
-            //     // Unconditional jump with offset
-            //     let v0 = ram.get_v_registers()[0];
-            //     let dest = (op & 0x0FFF).wrapping_add(v0 as u16);
-            //     next_instruction_address = dest as usize;
-            // }
-            // op if op & 0xF000 == 0x2000 => {
-            //     // Execute subroutine
-            //     let dest = op & 0x0FFF;
-            //     unimplemented!("Add subroutine jump")
-            // }
-            // op if op == 0x00EE => {
-            //     // Return from subroutine
-            //     unimplemented!("Add subroutine return")
-            // }
+            op if op & 0xF000 == 0xB000 => {
+                // Unconditional jump with offset
+                let v0 = ram.get_v_registers()[0];
+                let dest = (op & 0x0FFF).wrapping_add(v0 as u16);
+                next_instruction_address = dest as usize;
+            }
+            op if op & 0xF000 == 0x2000 => {
+                // Execute subroutine
+                #[cfg(debug_assertions)]
+                panic_if_chip8_stack_full(ram);
+
+                let dest_address = op & 0x0FFF;
+                let caller_address = ram.get_u16_at(PROGRAM_COUNTER_ADDRESS);
+
+                // Push where we are jumping from onto the stack
+                let sp = ram.get_u16_at(STACK_POINTER_ADDRESS);
+                ram.set_u16_at(sp as usize, caller_address);
+                ram.set_u16_at(STACK_POINTER_ADDRESS, sp + 2);
+
+                // Jump
+                next_instruction_address = dest_address as usize;
+            }
+            op if op == 0x00EE => {
+                // Return from subroutine
+                #[cfg(debug_assertions)]
+                panic_if_chip8_stack_empty_on_subroutine_return(ram);
+
+                // Pop return address off stack
+                let sp = ram.get_u16_at(STACK_POINTER_ADDRESS) - 2;
+                ram.set_u16_at(STACK_POINTER_ADDRESS, sp);
+                let caller_address = ram.get_u16_at(sp as usize);
+
+                // Jump
+                next_instruction_address = caller_address as usize + 2;
+            }
             // op if op & 0xF000 == 0x3000 => {
             //     // Skip if VX == constant
             //     let x = (op & 0x0F00) >> 16;
@@ -258,33 +311,174 @@ impl Chip8Interpreter {
 
             //     ram.load_bytes(&decimal_digits, I_ADDRESS).unwrap();
             // }
-            _ => unimplemented!(),
+            _ => {
+                #[cfg(debug_assertions)]
+                dbg!(Self::get_state(ram));
+
+                unimplemented!()
+            }
         };
 
+        #[cfg(debug_assertions)]
+        panic_if_pc_address_not_in_chip8_program_range(next_instruction_address as u16);
+
         ram.set_u16_at(PROGRAM_COUNTER_ADDRESS, next_instruction_address as u16);
+    }
+
+    pub fn get_state(ram: &CosmacRAM) -> Chip8State {
+        let pc = ram.get_u16_at(PROGRAM_COUNTER_ADDRESS);
+
+        Chip8State {
+            program_counter: pc,
+            instruction: ram.get_u16_at(pc as usize),
+            i: ram.get_u16_at(I_ADDRESS),
+            stack_pointer: ram.get_u16_at(STACK_POINTER_ADDRESS),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::iter;
+
     use crate::{
         interpreter::PROGRAM_COUNTER_ADDRESS,
         memory::{CosmacRAM, PROGRAM_START_ADDRESS},
+        test_utils,
     };
 
     use super::Chip8Interpreter;
 
     #[test]
-    fn unconditional_jump() {
+    fn jump() {
         let mut ram = CosmacRAM::new();
         let chip8 = Chip8Interpreter::new();
 
-        ram.load_chip8_program(&[0x12, 0x34])
+        ram.load_chip8_program(&chip8_program_into_bytes!(0x1234))
             .expect("Should be ok to load this small program.");
         chip8.reset(&mut ram);
 
         assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x0200);
         chip8.step(&mut ram);
         assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x0234);
+    }
+
+    #[test]
+    fn jump_out_of_bounds() {
+        let mut ram = CosmacRAM::new();
+        let chip8 = Chip8Interpreter::new();
+
+        ram.load_chip8_program(&chip8_program_into_bytes!(0x1234))
+            .expect("Should be ok to load this small program.");
+        chip8.reset(&mut ram);
+
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x0200);
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x0234);
+    }
+
+    #[test]
+    fn unconditional_jump_with_offset() {
+        let mut ram = CosmacRAM::new();
+        let chip8 = Chip8Interpreter::new();
+
+        ram.load_chip8_program(&chip8_program_into_bytes!(0xB234))
+            .expect("Should be ok to load this small program.");
+        chip8.reset(&mut ram);
+
+        let v0 = &mut ram.get_v_registers_mut()[0];
+        *v0 = 0xAA;
+
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x0200);
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x0234 + 0xAA);
+    }
+
+    #[test]
+    fn subroutine() {
+        let mut ram = CosmacRAM::new();
+        let chip8 = Chip8Interpreter::new();
+
+        let program = chip8_program_into_bytes!(
+            0x2204  // 0x0200, jump to 0x0204 subroutine
+            0x1208  // 0x0202, jump to end of program
+            NOOP    // 0x0204
+            0x00EE  // 0x0206, return from subroutine
+            NOOP    // 0x0208
+        );
+
+        ram.load_chip8_program(&program)
+            .expect("Should be ok to load this small program.");
+        chip8.reset(&mut ram);
+
+        let expected_address_sequence = [0x0200u16, 0x0204, 0x0206, 0x0202, 0x0208];
+        for address in expected_address_sequence {
+            assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), address);
+            chip8.step(&mut ram);
+        }
+    }
+
+    #[test]
+    fn nested_subroutines() {
+        let mut ram = CosmacRAM::new();
+        let chip8 = Chip8Interpreter::new();
+
+        // a program the dives into 12 nested subroutines then immediately
+        // returns from each.
+        let program = chip8_program_into_bytes!(
+            0x2204      // 0x0200
+            0x1232      // 0x0202
+            0x2208      // 0x0204
+            0x00EE
+            0x220C
+            0x00EE
+            0x2210
+            0x00EE
+            0x2214
+            0x00EE
+            0x2218
+            0x00EE
+            0x221C
+            0x00EE
+            0x2220
+            0x00EE
+            0x2224
+            0x00EE
+            0x2228
+            0x00EE
+            0x222C
+            0x00EE
+            0x2230
+            0x00EE
+            0x00EE
+            NOOP        // 0x0232
+        );
+
+        ram.load_chip8_program(&program)
+            .expect("Should be ok to load this small program.");
+        chip8.reset(&mut ram);
+
+        // build an iterator of the sequence of all instruction addresses
+        // expected when running the program
+        let expected_call_stack: Vec<u16> = (0..12).map(|i| 0x0200 + i * 4).collect();
+        let last_caller = expected_call_stack.last().unwrap();
+
+        let filling_the_stack = expected_call_stack.iter().copied();
+        let top_of_stack = iter::once(last_caller + 4);
+        let unwinding_the_stack = expected_call_stack
+            .iter()
+            .copied()
+            .rev()
+            .map(|addr| addr + 2);
+        let final_jump = iter::once(0x0232);
+        let expected_address_sequence = filling_the_stack
+            .chain(top_of_stack)
+            .chain(unwinding_the_stack)
+            .chain(final_jump);
+
+        for address in expected_address_sequence {
+            assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), address);
+            chip8.step(&mut ram);
+        }
     }
 }
