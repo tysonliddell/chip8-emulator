@@ -17,6 +17,7 @@ pub struct Chip8State<'a> {
     pub instruction: u16,
     pub i: u16,
     pub stack_pointer: u16,
+    pub hex_key_status: u16,
     pub v_registers: &'a [u8],
 }
 
@@ -30,6 +31,7 @@ impl<'a> Debug for Chip8State<'a> {
             .field("instruction", &format!("0x{:0>4X}", self.instruction))
             .field("i", &format!("0x{:0>4X}", self.i))
             .field("stack_pointer", &format!("0x{:0>4X}", self.stack_pointer))
+            .field("HEX_KEY_STATUS", &format!("0x{:0>4X}", self.hex_key_status))
             .field("V0", &format!("0x{:0>4X}", self.v_registers[0]))
             .field("V1", &format!("0x{:0>4X}", self.v_registers[1]))
             .field("V2", &format!("0x{:0>4X}", self.v_registers[2]))
@@ -54,10 +56,13 @@ impl<'a> Debug for Chip8State<'a> {
 pub(crate) const PROGRAM_COUNTER_ADDRESS: usize = INTERPRETER_WORK_AREA_START_ADDRESS;
 pub(crate) const I_ADDRESS: usize = INTERPRETER_WORK_AREA_START_ADDRESS + 2;
 pub(crate) const STACK_POINTER_ADDRESS: usize = INTERPRETER_WORK_AREA_START_ADDRESS + 4;
+pub(crate) const TIMER_ADDRESS: usize = INTERPRETER_WORK_AREA_START_ADDRESS + 6;
 
-// Value of 0x100X means hex key X was last key pressed (and still currently depressed)
-// Value of 0x000X means hex key X was last key pressed (no key currently depressed)
-pub(crate) const HEX_KEY_STATUS_ADDRESS: usize = INTERPRETER_WORK_AREA_START_ADDRESS + 6;
+pub(crate) const HEX_KEY_STATUS_ADDRESS: usize = INTERPRETER_WORK_AREA_START_ADDRESS + 8;
+const HEX_KEY_WAIT_FLAG: u16 = 0x1000;
+const HEX_KEY_SEEN_WHILE_WAITING_FLAG: u16 = 0x0100;
+const HEX_KEY_DEPRESSED_FLAG: u16 = 0x0010;
+const HEX_KEY_LAST_PRESSED_MASK: u16 = 0x000F;
 
 pub struct Chip8Interpreter<T: Chip8Rng = fastrand::Rng> {
     rng: T,
@@ -96,6 +101,43 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
 
         let instruction_address = ram.get_u16_at(PROGRAM_COUNTER_ADDRESS) as usize;
         let instruction = ram.get_u16_at(instruction_address);
+
+        // update timer here
+
+        let hex_key_status = ram.get_u16_at(HEX_KEY_STATUS_ADDRESS);
+        if hex_key_status & HEX_KEY_WAIT_FLAG != 0 {
+            // FX07 instruction
+            // waiting for key press or release
+            if hex_key_status & HEX_KEY_DEPRESSED_FLAG != 0 {
+                // key currently pressed
+                ram.set_u16_at(
+                    HEX_KEY_STATUS_ADDRESS,
+                    hex_key_status | HEX_KEY_SEEN_WHILE_WAITING_FLAG,
+                );
+
+                // update VX register for FX07 instruction.
+                let x = (instruction & 0x0F00) >> 8;
+                let hex_key_status = ram.get_u16_at(HEX_KEY_STATUS_ADDRESS);
+                let key = hex_key_status & HEX_KEY_LAST_PRESSED_MASK;
+
+                let vx = &mut ram.get_v_registers_mut()[x as usize];
+                *vx = key as u8;
+            } else if hex_key_status & HEX_KEY_SEEN_WHILE_WAITING_FLAG != 0 {
+                // seen key pressed and released following wait
+
+                // reset flags
+                ram.set_u16_at(
+                    HEX_KEY_STATUS_ADDRESS,
+                    hex_key_status & !(HEX_KEY_WAIT_FLAG | HEX_KEY_SEEN_WHILE_WAITING_FLAG),
+                );
+
+                // complete FX07 instruction
+                let next_instruction_address = instruction_address.wrapping_add(2);
+                ram.set_u16_at(PROGRAM_COUNTER_ADDRESS, next_instruction_address as u16);
+            }
+            return;
+        }
+
         let mut next_instruction_address = instruction_address.wrapping_add(2);
 
         match instruction {
@@ -185,7 +227,7 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
                 let x = (op & 0x0F00) >> 8;
                 let vx = ram.get_v_registers()[x as usize];
                 let vx_lsb = vx & 0x0F;
-                let key: Option<u8> = Self::get_key_press(ram);
+                let key: Option<u8> = Self::get_current_key_press(ram);
                 if key.is_some() && key.unwrap() == vx_lsb {
                     next_instruction_address = next_instruction_address.wrapping_add(2);
                 }
@@ -195,7 +237,7 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
                 let x = (op & 0x0F00) >> 8;
                 let vx = ram.get_v_registers()[x as usize];
                 let vx_lsb = vx & 0x0F;
-                let key: Option<u8> = Self::get_key_press(ram);
+                let key: Option<u8> = Self::get_current_key_press(ram);
                 if key.is_none() || key.unwrap() != vx_lsb {
                     next_instruction_address = next_instruction_address.wrapping_add(2);
                 }
@@ -280,18 +322,23 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
                 let vf = &mut ram.get_v_registers_mut()[0xF];
                 *vf = borrow;
             }
-            // op if op & 0xF0FF == 0xF007 => {
-            //     // Set VX = timer
-            //     let x = (op & 0x0F00) >> 16;
-            //     let vx = &mut ram.get_v_registers_mut()[x as usize];
-            //     todo!("Implement timer logic");
-            // }
-            // op if op & 0xF0FF == 0xF00A => {
-            //     // Set VX = hex key digit (wait for key press)
-            //     let x = (op & 0x0F00) >> 16;
-            //     let vx = &mut ram.get_v_registers_mut()[x as usize];
-            //     todo!("Implement hex key logic");
-            // }
+            op if op & 0xF0FF == 0xF007 => {
+                // Set VX = timer
+                let x = (op & 0x0F00) >> 8;
+                let timer = ram.get_u16_at(TIMER_ADDRESS);
+
+                let vx = &mut ram.get_v_registers_mut()[x as usize];
+                *vx = (timer & 0xFF) as u8;
+            }
+            op if op & 0xF0FF == 0xF00A => {
+                // Set VX = hex key digit (wait for key press)
+                let hex_key_status = ram.get_u16_at(HEX_KEY_STATUS_ADDRESS);
+                ram.set_u16_at(HEX_KEY_STATUS_ADDRESS, hex_key_status | HEX_KEY_WAIT_FLAG);
+
+                // since program counter was advanced at the beginning of the function,
+                // we need to put it back.
+                next_instruction_address = instruction_address;
+            }
             // op if op & 0xF0FF == 0xF015 => {
             //     // Set timer = VX (01 = 1/60 seconds)
             //     let x = (op & 0x0F00) >> 16;
@@ -361,16 +408,17 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
             instruction: ram.get_u16_at(pc as usize),
             i: ram.get_u16_at(I_ADDRESS),
             stack_pointer: ram.get_u16_at(STACK_POINTER_ADDRESS),
+            hex_key_status: ram.get_u16_at(HEX_KEY_STATUS_ADDRESS),
             v_registers: ram.get_v_registers(),
         }
     }
 
-    fn get_key_press(ram: &CosmacRAM) -> Option<u8> {
+    fn get_current_key_press(ram: &CosmacRAM) -> Option<u8> {
         let hex_key_status = ram.get_u16_at(HEX_KEY_STATUS_ADDRESS);
-        if 0x1000 & hex_key_status == 0 {
+        if HEX_KEY_DEPRESSED_FLAG & hex_key_status == 0 {
             None
         } else {
-            Some((hex_key_status & 0x000F) as u8)
+            Some((hex_key_status & HEX_KEY_LAST_PRESSED_MASK) as u8)
         }
     }
 }
@@ -380,7 +428,10 @@ mod tests {
     use std::iter;
 
     use crate::{
-        interpreter::{HEX_KEY_STATUS_ADDRESS, PROGRAM_COUNTER_ADDRESS},
+        interpreter::{
+            HEX_KEY_DEPRESSED_FLAG, HEX_KEY_LAST_PRESSED_MASK, HEX_KEY_STATUS_ADDRESS,
+            PROGRAM_COUNTER_ADDRESS, TIMER_ADDRESS,
+        },
         memory::{CosmacRAM, PROGRAM_START_ADDRESS},
         rng::MockChip8Rng,
         test_utils,
@@ -592,7 +643,7 @@ mod tests {
             NOOP
         ));
         ram.get_v_registers_mut()[7] = 0x42; // LSB is hex key 2
-        ram.set_u16_at(HEX_KEY_STATUS_ADDRESS, 0x1002); // key 2 currently pressed
+        ram.set_u16_at(HEX_KEY_STATUS_ADDRESS, 0x0012); // key 2 currently pressed
 
         chip8.step(&mut ram);
         assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x0204);
@@ -607,7 +658,7 @@ mod tests {
         ));
 
         ram.get_v_registers_mut()[7] = 0x42; // LSB is hex key 2
-        ram.set_u16_at(HEX_KEY_STATUS_ADDRESS, 0x1001); // key 1 currently pressed
+        ram.set_u16_at(HEX_KEY_STATUS_ADDRESS, 0x0011); // key 1 currently pressed
 
         chip8.step(&mut ram);
         assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x0202);
@@ -653,7 +704,7 @@ mod tests {
             NOOP
         ));
         ram.get_v_registers_mut()[7] = 0x42; // LSB is hex key 2
-        ram.set_u16_at(HEX_KEY_STATUS_ADDRESS, 0x1002); // key 2 currently pressed
+        ram.set_u16_at(HEX_KEY_STATUS_ADDRESS, 0x0012); // key 2 currently pressed
 
         chip8.step(&mut ram);
         assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x0202);
@@ -668,7 +719,7 @@ mod tests {
         ));
 
         ram.get_v_registers_mut()[7] = 0x42; // LSB is hex key 2
-        ram.set_u16_at(HEX_KEY_STATUS_ADDRESS, 0x1001); // key 1 currently pressed
+        ram.set_u16_at(HEX_KEY_STATUS_ADDRESS, 0x0011); // key 1 currently pressed
 
         chip8.step(&mut ram);
         assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x0204);
@@ -870,5 +921,75 @@ mod tests {
         assert_eq!(ram.get_v_registers()[0x4], 0x1F);
         assert_eq!(ram.get_v_registers()[0x5], 0xF0);
         assert_eq!(ram.get_v_registers()[0xF], 0x00); // carry should be zero
+    }
+
+    #[test]
+    fn set_vx_register_to_current_timer_value() {
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+            0xF407
+            NOOP
+        ));
+
+        ram.set_u16_at(TIMER_ADDRESS, 0x77);
+        ram.get_v_registers_mut()[4] = 0xFF;
+        chip8.step(&mut ram);
+
+        assert_eq!(ram.get_v_registers()[4], 0x77);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
+    }
+
+    #[test]
+    fn set_vx_register_to_current_hex_digit() {
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+            0xF40A
+            NOOP
+        ));
+
+        // last press was 9, no key currently pressed
+        ram.set_u16_at(HEX_KEY_STATUS_ADDRESS, 0x0009);
+        ram.get_v_registers_mut()[4] = 0xFF;
+
+        // hex key not pressed yet, program counter doesn't move
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_v_registers()[4], 0xFF);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x200);
+
+        // hex key not pressed yet, program counter doesn't move
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_v_registers()[4], 0xFF);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x200);
+
+        // hex key not pressed yet, program counter doesn't move
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_v_registers()[4], 0xFF);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x200);
+
+        // 3 key pressed
+        let hex_key_status = ram.get_u16_at(HEX_KEY_STATUS_ADDRESS);
+        ram.set_u16_at(
+            HEX_KEY_STATUS_ADDRESS,
+            hex_key_status & !HEX_KEY_LAST_PRESSED_MASK | HEX_KEY_DEPRESSED_FLAG | 0x03,
+        );
+
+        // key pressed, don't advance program counter yet!
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_v_registers()[4], 0x03);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x200);
+
+        // key pressed, don't advance program counter yet!
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_v_registers()[4], 0x03);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x200);
+
+        // key released, program continues
+        let hex_key_status = ram.get_u16_at(HEX_KEY_STATUS_ADDRESS);
+        ram.set_u16_at(
+            HEX_KEY_STATUS_ADDRESS,
+            hex_key_status & !HEX_KEY_DEPRESSED_FLAG,
+        );
+
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_v_registers()[4], 0x03);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
     }
 }
