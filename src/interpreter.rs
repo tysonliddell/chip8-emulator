@@ -5,9 +5,10 @@ use crate::{
         panic_if_chip8_stack_empty_on_subroutine_return, panic_if_chip8_stack_full,
         panic_if_pc_address_not_in_chip8_program_range,
     },
+    font::{CHARACTER_BYTES, CHARACTER_MAP},
     memory::{
-        CosmacRAM, INTERPRETER_WORK_AREA_START_ADDRESS, MEMORY_SIZE, PROGRAM_LAST_ADDRESS,
-        PROGRAM_START_ADDRESS, STACK_START_ADDRESS,
+        CosmacRAM, INTERPRETER_WORK_AREA_START_ADDRESS, MEMORY_SIZE, MEMORY_START_ADDRESS,
+        PROGRAM_LAST_ADDRESS, PROGRAM_START_ADDRESS, STACK_START_ADDRESS,
     },
     rng::Chip8Rng,
 };
@@ -57,6 +58,8 @@ impl<'a> Debug for Chip8State<'a> {
 }
 
 // Program counter address
+pub(crate) const CHARACTER_BYTES_ADDRESS: usize = 0x0000;
+pub(crate) const CHARACTER_MAP_ADDRESS: usize = CHARACTER_BYTES_ADDRESS + CHARACTER_BYTES.len();
 pub(crate) const PROGRAM_COUNTER_ADDRESS: usize = INTERPRETER_WORK_AREA_START_ADDRESS;
 pub(crate) const I_ADDRESS: usize = INTERPRETER_WORK_AREA_START_ADDRESS + 2;
 pub(crate) const STACK_POINTER_ADDRESS: usize = INTERPRETER_WORK_AREA_START_ADDRESS + 4;
@@ -82,9 +85,15 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
         // reset all CHIP-8 interpreter state
         ram.zero_out_range(STACK_START_ADDRESS..MEMORY_SIZE)
             .expect("Should be ok to zero out this memory");
+        Chip8Interpreter::<T>::load_fonts(ram, MEMORY_START_ADDRESS as u16);
 
         ram.set_u16_at(PROGRAM_COUNTER_ADDRESS, PROGRAM_START_ADDRESS as u16);
         ram.set_u16_at(STACK_POINTER_ADDRESS, STACK_START_ADDRESS as u16);
+    }
+
+    fn load_fonts(ram: &mut CosmacRAM, start_address: u16) {
+        ram.load_bytes(&CHARACTER_BYTES, 0x0000);
+        ram.load_bytes(&CHARACTER_MAP, CHARACTER_MAP_ADDRESS);
     }
 
     /// Execute the current CHIP-8 instruction, determined by the internal
@@ -364,26 +373,28 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
                 let vx_val = ram.get_v_registers()[x as usize];
                 ram.set_u16_at(TONE_TIMER_ADDRESS, vx_val as u16);
             }
-            // op if op & 0xF000 == 0xA000 => {
-            //     // Set I = 0MMM
-            //     let dest = op & 0x0FFF;
-            //     ram.set_u16_at(I_ADDRESS, dest);
-            // }
-            // op if op & 0xF0FF == 0xF01E => {
-            //     // Set I = I + VX
-            //     let x = (op & 0x0F00) >> 16;
-            //     let vx_val = ram.get_v_registers()[x as usize];
+            op if op & 0xF000 == 0xA000 => {
+                // Set I = 0MMM
+                let dest = op & 0x0FFF;
+                ram.set_u16_at(I_ADDRESS, dest);
+            }
+            op if op & 0xF0FF == 0xF01E => {
+                // Set I = I + VX
+                let x = (op & 0x0F00) >> 8;
+                let vx_val = ram.get_v_registers()[x as usize];
 
-            //     let I_val = ram.get_u16_at(I_ADDRESS).wrapping_add(vx_val as u16);
-            //     ram.set_u16_at(I_ADDRESS, I_val);
-            // }
-            // op if op & 0xF0FF == 0xF029 => {
-            //     // Set I = Address of 5-byte display pattern for LSD of VX
-            //     let x = (op & 0x0F00) >> 16;
-            //     let vx_val = ram.get_v_registers()[x as usize];
+                let i_val = ram.get_u16_at(I_ADDRESS);
+                ram.set_u16_at(I_ADDRESS, i_val.wrapping_add(vx_val as u16));
+            }
+            op if op & 0xF0FF == 0xF029 => {
+                // Set I = Address of 5-byte display pattern for LSD of VX
+                let x = (op & 0x0F00) >> 8;
+                let vx_val = ram.get_v_registers()[x as usize];
+                let hex_val = vx_val & 0x0F; // LSB of VX
 
-            //     let I_val = todo!("Add logic for fonts");
-            // }
+                let hex_glyph_address = ram.bytes()[CHARACTER_MAP_ADDRESS + hex_val as usize];
+                ram.set_u16_at(I_ADDRESS, hex_glyph_address as u16);
+            }
             // op if op & 0xF0FF == 0xF033 => {
             //     // Set MI = 3-decimal digit equivalent of VX (I unchanged)
             //     let x = (op & 0x0F00) >> 16;
@@ -444,7 +455,7 @@ mod tests {
 
     use crate::{
         interpreter::{
-            HEX_KEY_DEPRESSED_FLAG, HEX_KEY_LAST_PRESSED_MASK, HEX_KEY_STATUS_ADDRESS,
+            HEX_KEY_DEPRESSED_FLAG, HEX_KEY_LAST_PRESSED_MASK, HEX_KEY_STATUS_ADDRESS, I_ADDRESS,
             PROGRAM_COUNTER_ADDRESS, TIMER_ADDRESS, TONE_TIMER_ADDRESS,
         },
         memory::{CosmacRAM, PROGRAM_START_ADDRESS},
@@ -1066,5 +1077,57 @@ mod tests {
         chip8.step(&mut ram);
         assert_eq!(ram.get_u16_at(TONE_TIMER_ADDRESS), 0x00);
         assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x208);
+    }
+
+    #[test]
+    fn set_i_eq_const() {
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+            0xA123
+            NOOP
+        ));
+
+        assert_eq!(ram.get_u16_at(I_ADDRESS), 0x0000);
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_u16_at(I_ADDRESS), 0x0123);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
+    }
+
+    #[test]
+    fn set_i_eq_i_add_vx() {
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+            0xF41E
+            NOOP
+        ));
+
+        ram.set_u16_at(I_ADDRESS, 0x0123);
+        ram.get_v_registers_mut()[4] = 0x45;
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_u16_at(I_ADDRESS), 0x0123 + 0x45);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
+    }
+
+    #[test]
+    fn set_i_eq_vx_lsd_display_pattern() {
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+            0xF729  // use V7
+            NOOP
+        ));
+
+        assert_eq!(ram.get_u16_at(I_ADDRESS), 0x0000);
+        ram.get_v_registers_mut()[7] = 0x45; // LSB == 5 means we expect glyph for hex 5.
+
+        chip8.step(&mut ram);
+
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
+        let hex_5_address = ram.get_u16_at(I_ADDRESS) as usize;
+        let glyph = &ram.bytes()[hex_5_address..][..5];
+        #[rustfmt::skip]
+        assert_eq!(glyph, &[
+            0b11110000,
+            0b10000000,
+            0b11110000,
+            0b00010000,
+            0b11110000,
+        ]);
     }
 }

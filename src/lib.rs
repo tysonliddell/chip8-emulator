@@ -8,6 +8,7 @@ mod test_utils;
 
 // Modules
 mod error;
+mod font;
 mod interpreter;
 pub mod memory;
 mod rng;
