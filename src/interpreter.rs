@@ -17,6 +17,8 @@ pub struct Chip8State<'a> {
     pub instruction: u16,
     pub i: u16,
     pub stack_pointer: u16,
+    pub timer: u16,
+    pub tone_timer: u16,
     pub hex_key_status: u16,
     pub v_registers: &'a [u8],
 }
@@ -31,6 +33,8 @@ impl<'a> Debug for Chip8State<'a> {
             .field("instruction", &format!("0x{:0>4X}", self.instruction))
             .field("i", &format!("0x{:0>4X}", self.i))
             .field("stack_pointer", &format!("0x{:0>4X}", self.stack_pointer))
+            .field("TIMER", &format!("0x{:0>4X}", self.timer))
+            .field("TONE TIMER", &format!("0x{:0>4X}", self.tone_timer))
             .field("HEX_KEY_STATUS", &format!("0x{:0>4X}", self.hex_key_status))
             .field("V0", &format!("0x{:0>4X}", self.v_registers[0]))
             .field("V1", &format!("0x{:0>4X}", self.v_registers[1]))
@@ -57,8 +61,9 @@ pub(crate) const PROGRAM_COUNTER_ADDRESS: usize = INTERPRETER_WORK_AREA_START_AD
 pub(crate) const I_ADDRESS: usize = INTERPRETER_WORK_AREA_START_ADDRESS + 2;
 pub(crate) const STACK_POINTER_ADDRESS: usize = INTERPRETER_WORK_AREA_START_ADDRESS + 4;
 pub(crate) const TIMER_ADDRESS: usize = INTERPRETER_WORK_AREA_START_ADDRESS + 6;
+pub(crate) const TONE_TIMER_ADDRESS: usize = INTERPRETER_WORK_AREA_START_ADDRESS + 8;
 
-pub(crate) const HEX_KEY_STATUS_ADDRESS: usize = INTERPRETER_WORK_AREA_START_ADDRESS + 8;
+pub(crate) const HEX_KEY_STATUS_ADDRESS: usize = INTERPRETER_WORK_AREA_START_ADDRESS + 10;
 const HEX_KEY_WAIT_FLAG: u16 = 0x1000;
 const HEX_KEY_SEEN_WHILE_WAITING_FLAG: u16 = 0x0100;
 const HEX_KEY_DEPRESSED_FLAG: u16 = 0x0010;
@@ -102,7 +107,15 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
         let instruction_address = ram.get_u16_at(PROGRAM_COUNTER_ADDRESS) as usize;
         let instruction = ram.get_u16_at(instruction_address);
 
-        // update timer here
+        let timer = ram.get_u16_at(TIMER_ADDRESS);
+        if timer > 0 {
+            ram.set_u16_at(TIMER_ADDRESS, timer - 1);
+        }
+
+        let tone_timer = ram.get_u16_at(TONE_TIMER_ADDRESS);
+        if tone_timer > 0 {
+            ram.set_u16_at(TONE_TIMER_ADDRESS, tone_timer - 1);
+        }
 
         let hex_key_status = ram.get_u16_at(HEX_KEY_STATUS_ADDRESS);
         if hex_key_status & HEX_KEY_WAIT_FLAG != 0 {
@@ -339,18 +352,18 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
                 // we need to put it back.
                 next_instruction_address = instruction_address;
             }
-            // op if op & 0xF0FF == 0xF015 => {
-            //     // Set timer = VX (01 = 1/60 seconds)
-            //     let x = (op & 0x0F00) >> 16;
-            //     let vx_val = ram.get_v_registers()[x as usize];
-            //     todo!("Implement timer logic");
-            // }
-            // op if op & 0xF0FF == 0xF018 => {
-            //     // Set tone duration = VX (01 = 1/60 seconds)
-            //     let x = (op & 0x0F00) >> 16;
-            //     let vx_val = ram.get_v_registers()[x as usize];
-            //     todo!("Implement tone logic");
-            // }
+            op if op & 0xF0FF == 0xF015 => {
+                // Set timer = VX (01 = 1/60 seconds)
+                let x = (op & 0x0F00) >> 8;
+                let vx_val = ram.get_v_registers()[x as usize];
+                ram.set_u16_at(TIMER_ADDRESS, vx_val as u16);
+            }
+            op if op & 0xF0FF == 0xF018 => {
+                // Set tone duration = VX (01 = 1/60 seconds)
+                let x = (op & 0x0F00) >> 8;
+                let vx_val = ram.get_v_registers()[x as usize];
+                ram.set_u16_at(TONE_TIMER_ADDRESS, vx_val as u16);
+            }
             // op if op & 0xF000 == 0xA000 => {
             //     // Set I = 0MMM
             //     let dest = op & 0x0FFF;
@@ -408,6 +421,8 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
             instruction: ram.get_u16_at(pc as usize),
             i: ram.get_u16_at(I_ADDRESS),
             stack_pointer: ram.get_u16_at(STACK_POINTER_ADDRESS),
+            timer: ram.get_u16_at(TIMER_ADDRESS),
+            tone_timer: ram.get_u16_at(TONE_TIMER_ADDRESS),
             hex_key_status: ram.get_u16_at(HEX_KEY_STATUS_ADDRESS),
             v_registers: ram.get_v_registers(),
         }
@@ -430,7 +445,7 @@ mod tests {
     use crate::{
         interpreter::{
             HEX_KEY_DEPRESSED_FLAG, HEX_KEY_LAST_PRESSED_MASK, HEX_KEY_STATUS_ADDRESS,
-            PROGRAM_COUNTER_ADDRESS, TIMER_ADDRESS,
+            PROGRAM_COUNTER_ADDRESS, TIMER_ADDRESS, TONE_TIMER_ADDRESS,
         },
         memory::{CosmacRAM, PROGRAM_START_ADDRESS},
         rng::MockChip8Rng,
@@ -934,7 +949,7 @@ mod tests {
         ram.get_v_registers_mut()[4] = 0xFF;
         chip8.step(&mut ram);
 
-        assert_eq!(ram.get_v_registers()[4], 0x77);
+        assert_eq!(ram.get_v_registers()[4], 0x77 - 1);
         assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
     }
 
@@ -991,5 +1006,65 @@ mod tests {
         chip8.step(&mut ram);
         assert_eq!(ram.get_v_registers()[4], 0x03);
         assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
+    }
+
+    #[test]
+    fn set_timer_eq_vx_and_countdown() {
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+            0xF715
+            NOOP
+            NOOP
+            NOOP
+            NOOP
+        ));
+
+        ram.get_v_registers_mut()[7] = 0x02;
+        assert_eq!(ram.get_u16_at(TIMER_ADDRESS), 0x00);
+
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_u16_at(TIMER_ADDRESS), 0x02);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
+
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_u16_at(TIMER_ADDRESS), 0x01);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x204);
+
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_u16_at(TIMER_ADDRESS), 0x00);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x206);
+
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_u16_at(TIMER_ADDRESS), 0x00);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x208);
+    }
+
+    #[test]
+    fn set_tone_timer_eq_vx_and_countdown() {
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+            0xF718
+            NOOP
+            NOOP
+            NOOP
+            NOOP
+        ));
+
+        ram.get_v_registers_mut()[7] = 0x2;
+        assert_eq!(ram.get_u16_at(TONE_TIMER_ADDRESS), 0x00);
+
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_u16_at(TONE_TIMER_ADDRESS), 0x02);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
+
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_u16_at(TONE_TIMER_ADDRESS), 0x01);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x204);
+
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_u16_at(TONE_TIMER_ADDRESS), 0x00);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x206);
+
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_u16_at(TONE_TIMER_ADDRESS), 0x00);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x208);
     }
 }
