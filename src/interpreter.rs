@@ -3,7 +3,7 @@ use std::fmt::{self, Debug};
 use crate::{
     debug::{
         panic_if_chip8_stack_empty_on_subroutine_return, panic_if_chip8_stack_full,
-        panic_if_pc_address_not_in_chip8_program_range,
+        panic_if_i_address_out_of_bounds, panic_if_pc_address_not_in_chip8_program_range,
     },
     font::{CHARACTER_BYTES, CHARACTER_MAP},
     memory::{
@@ -92,8 +92,10 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
     }
 
     fn load_fonts(ram: &mut CosmacRAM, start_address: u16) {
-        ram.load_bytes(&CHARACTER_BYTES, 0x0000);
-        ram.load_bytes(&CHARACTER_MAP, CHARACTER_MAP_ADDRESS);
+        ram.load_bytes(&CHARACTER_BYTES, 0x0000)
+            .expect("Should be ok to load font data data in low memory.");
+        ram.load_bytes(&CHARACTER_MAP, CHARACTER_MAP_ADDRESS)
+            .expect("Should be ok to load character map in low memory.");
     }
 
     /// Execute the current CHIP-8 instruction, determined by the internal
@@ -395,21 +397,47 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
                 let hex_glyph_address = ram.bytes()[CHARACTER_MAP_ADDRESS + hex_val as usize];
                 ram.set_u16_at(I_ADDRESS, hex_glyph_address as u16);
             }
-            // op if op & 0xF0FF == 0xF033 => {
-            //     // Set MI = 3-decimal digit equivalent of VX (I unchanged)
-            //     let x = (op & 0x0F00) >> 16;
-            //     let mut vx_val = ram.get_v_registers()[x as usize];
+            op if op & 0xF0FF == 0xF033 => {
+                // Set MI = 3-decimal digit equivalent of VX (I unchanged)
+                let x = (op & 0x0F00) >> 8;
+                let mut vx_val = ram.get_v_registers()[x as usize];
 
-            //     todo!("See of we can make this more efficient. This seems slow.");
-            //     let mut decimal_digits = [0u8; 3];
-            //     decimal_digits[0] = vx_val / 100;
-            //     vx_val -= decimal_digits[0];
-            //     decimal_digits[1] = vx_val / 10;
-            //     vx_val -= decimal_digits[1];
-            //     decimal_digits[2] = vx_val;
+                let mut decimal_digits = [0u8; 3];
+                decimal_digits[0] = vx_val / 100;
+                vx_val -= decimal_digits[0] * 100;
+                decimal_digits[1] = vx_val / 10;
+                vx_val -= decimal_digits[1] * 10;
+                decimal_digits[2] = vx_val;
 
-            //     ram.load_bytes(&decimal_digits, I_ADDRESS).unwrap();
-            // }
+                let i_data = ram.get_u16_at(I_ADDRESS);
+                ram.load_bytes(&decimal_digits, i_data as usize)
+                    .expect("I register should point to valid memory location");
+            }
+            op if op & 0xF0FF == 0xF055 => {
+                // Set MI = V0 : VX, I = I + X + 1
+                let x = (op & 0x0F00) >> 8;
+                let i = ram.get_u16_at(I_ADDRESS);
+
+                for x in 0..=x as usize {
+                    let vx_val = ram.get_v_registers()[x];
+                    ram.load_bytes(&[vx_val], i as usize + x)
+                        .expect("I register should point to valid memory location");
+                }
+
+                ram.set_u16_at(I_ADDRESS, i + x + 1);
+            }
+            op if op & 0xF0FF == 0xF065 => {
+                // Set V0 : VX = MI, I = I + X + 1
+                let x = (op & 0x0F00) >> 8;
+                let i = ram.get_u16_at(I_ADDRESS);
+
+                for x in 0..=x as usize {
+                    let val = ram.bytes()[i as usize + x];
+                    ram.get_v_registers_mut()[x] = val;
+                }
+
+                ram.set_u16_at(I_ADDRESS, i + x + 1);
+            }
             _ => {
                 #[cfg(debug_assertions)]
                 dbg!(Self::get_state(ram));
@@ -419,7 +447,10 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
         };
 
         #[cfg(debug_assertions)]
-        panic_if_pc_address_not_in_chip8_program_range(next_instruction_address as u16);
+        {
+            panic_if_pc_address_not_in_chip8_program_range(next_instruction_address as u16);
+            panic_if_i_address_out_of_bounds(ram.get_u16_at(I_ADDRESS));
+        }
 
         ram.set_u16_at(PROGRAM_COUNTER_ADDRESS, next_instruction_address as u16);
     }
@@ -1129,5 +1160,123 @@ mod tests {
             0b00010000,
             0b11110000,
         ]);
+    }
+
+    #[test]
+    fn set_i_data_to_decimal_digits_of_vx() {
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+            0xF133
+            0xF233
+            0xF333
+            0xF433
+            NOOP
+        ));
+
+        ram.get_v_registers_mut()[1] = 234; // 3 digit test case
+        ram.get_v_registers_mut()[2] = 56; // 2 digit test case
+        ram.get_v_registers_mut()[3] = 7; // 1 digit test case
+        ram.get_v_registers_mut()[4] = 0; // zero test case
+        ram.set_u16_at(I_ADDRESS, 0x0300); // write digits to memory address 0x0300
+
+        chip8.step(&mut ram);
+        let result = &ram.bytes()[0x0300..][..3];
+        assert_eq!(result, &[2, 3, 4]);
+        assert_eq!(
+            ram.get_u16_at(I_ADDRESS),
+            0x0300,
+            "I register should be unchanged"
+        );
+
+        chip8.step(&mut ram);
+        let result = &ram.bytes()[0x0300..][..3];
+        assert_eq!(result, &[0, 5, 6]);
+        assert_eq!(
+            ram.get_u16_at(I_ADDRESS),
+            0x0300,
+            "I register should be unchanged"
+        );
+
+        chip8.step(&mut ram);
+        let result = &ram.bytes()[0x0300..][..3];
+        assert_eq!(result, &[0, 0, 7]);
+        assert_eq!(
+            ram.get_u16_at(I_ADDRESS),
+            0x0300,
+            "I register should be unchanged"
+        );
+
+        chip8.step(&mut ram);
+        let result = &ram.bytes()[0x0300..][..3];
+        assert_eq!(result, &[0, 0, 0]);
+        assert_eq!(
+            ram.get_u16_at(I_ADDRESS),
+            0x0300,
+            "I register should be unchanged"
+        );
+    }
+
+    #[test]
+    fn set_i_data_to_vx_slice() {
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+            0xFC55
+            NOOP
+        ));
+
+        // set each VX register to its index to generate some test data
+        let test_register_vals = [
+            0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8, 0x9, 0xA, 0xB, 0xC, 0xD, 0xE, 0xF,
+        ];
+        ram.get_v_registers_mut()
+            .copy_from_slice(&test_register_vals);
+
+        // use I = 0x0300 and set some data at this location before executing the instruction
+        ram.set_u16_at(I_ADDRESS, 0x0300);
+        ram.load_bytes(&[0xFF; 16], 0x0300).unwrap();
+
+        dbg!(&ram.bytes()[0x0300..][..16]);
+
+        // execute the instruction
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
+
+        // data pointed to by I should be updated
+        assert_eq!(
+            &ram.bytes()[0x0300..][..16],
+            &[0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8, 0x9, 0xA, 0xB, 0xC, 0xFF, 0xFF, 0xFF]
+        );
+
+        // value of I should be incremented on COSMAC VIP CHIP-8.
+        assert_eq!(ram.get_u16_at(I_ADDRESS), 0x0300 + 0xC + 1);
+    }
+
+    #[test]
+    fn set_vx_slice_to_i_data() {
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+            0xFC65
+            NOOP
+        ));
+
+        // set I data
+        ram.set_u16_at(I_ADDRESS, 0x0300);
+        let test_data = [
+            0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8, 0x9, 0xA, 0xB, 0xC, 0xD, 0xE, 0xF,
+        ];
+        ram.load_bytes(&test_data, 0x300);
+
+        // Fill VX registers with existing data
+        ram.get_v_registers_mut().copy_from_slice(&[0xFF; 16]);
+
+        // execute the instruction
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
+
+        // check data copied
+        assert_eq!(
+            ram.get_v_registers(),
+            &[0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8, 0x9, 0xA, 0xB, 0xC, 0xFF, 0xFF, 0xFF]
+        );
+
+        // check I incremented
+        assert_eq!(ram.get_u16_at(I_ADDRESS), 0x0300 + 0xC + 1);
     }
 }
