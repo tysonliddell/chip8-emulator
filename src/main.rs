@@ -1,36 +1,31 @@
-use chip8_emulator::memory::CosmacRAM;
+use std::{
+    fs::File,
+    io::{BufReader, Read},
+};
+
+use chip8_emulator::{emulator, peripherals::DummyPeripherals};
 
 fn main() {
     let config = cli::parse_args();
-    let mut ram = CosmacRAM::new();
 
-    if let Err(e) = io::load_chip8_program_into_cosmac(&config.chip8_program_path, &mut ram) {
-        eprintln!("{}: {}", config.chip8_program_path, e);
-        std::process::exit(1);
-    }
-
-    // Inspect the program in RAM.
-    println!("{:?}", &ram.bytes()[0x0200..0x0300])
-}
-
-mod io {
-    use std::{
-        error::Error,
-        fs::File,
-        io::{BufReader, Read},
-        path::Path,
+    let chip8_program = File::open(&config.chip8_program_path)
+        .and_then(|file| BufReader::new(file).bytes().collect());
+    let chip8_program: Vec<u8> = match chip8_program {
+        Err(e) => {
+            eprintln!("{}: {}", config.chip8_program_path, e);
+            std::process::exit(1);
+        }
+        Ok(bytes) => bytes,
     };
 
-    use chip8_emulator::memory::CosmacRAM;
+    let dummy_peripherals = DummyPeripherals {};
+    let tone = &dummy_peripherals;
+    let display_renderer = &dummy_peripherals;
+    let hex_keyboard = &dummy_peripherals;
 
-    pub fn load_chip8_program_into_cosmac(
-        path: impl AsRef<Path>,
-        ram: &mut CosmacRAM,
-    ) -> Result<(), Box<dyn Error>> {
-        let chip8_program_file = BufReader::new(File::open(path)?);
-        let bytes: Result<Vec<u8>, _> = chip8_program_file.bytes().collect();
-        ram.load_chip8_program(bytes?.as_slice())?;
-        Ok(())
+    if let Err(e) = emulator::run(&chip8_program, tone, display_renderer, hex_keyboard) {
+        eprintln!("emulator error: {}", e);
+        std::process::exit(1);
     }
 }
 
