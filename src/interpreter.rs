@@ -73,6 +73,9 @@ const HEX_KEY_SEEN_WHILE_WAITING_FLAG: u16 = 0x0100;
 const HEX_KEY_DEPRESSED_FLAG: u16 = 0x0010;
 const HEX_KEY_LAST_PRESSED_MASK: u16 = 0x000F;
 
+pub(crate) const DISPLAY_HEIGHT_PIXELS: usize = 32;
+pub(crate) const DISPLAY_WIDTH_PIXELS: usize = 64;
+
 pub struct Chip8Interpreter<T: Chip8Rng = fastrand::Rng> {
     rng: T,
 }
@@ -537,6 +540,28 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
         } else {
             Some((hex_key_status & HEX_KEY_LAST_PRESSED_MASK) as u8)
         }
+    }
+
+    pub fn set_current_key_press(ram: &mut CosmacRAM, current_key: Option<u8>) {
+        let mut hex_key_status = ram.get_u16_at(HEX_KEY_STATUS_ADDRESS);
+
+        match current_key {
+            Some(key) => {
+                hex_key_status |= HEX_KEY_DEPRESSED_FLAG;
+                hex_key_status &= !HEX_KEY_LAST_PRESSED_MASK;
+                hex_key_status |= key as u16 & HEX_KEY_LAST_PRESSED_MASK;
+            }
+            None => {
+                hex_key_status &= !HEX_KEY_DEPRESSED_FLAG;
+            }
+        }
+        ram.set_u16_at(HEX_KEY_STATUS_ADDRESS, hex_key_status);
+    }
+
+    pub fn is_tone_sounding(ram: &CosmacRAM) -> bool {
+        // according to the RCA COSMAC VIP manual, the speaker only responds to a
+        // tone when the timer value is >= 2.
+        ram.get_u16_at(TONE_TIMER_ADDRESS) > 1
     }
 }
 

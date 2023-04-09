@@ -193,6 +193,11 @@ impl CosmacRAM {
         &mut self.data[V_REGISTERS_START_ADDRESS..][..NUM_V_REGISTERS]
     }
 
+    /// Get the slice of RAM that holds the CHIP-8 display buffer.
+    pub fn display_buffer(&self) -> &[u8] {
+        &self.data[DISPLAY_REFRESH_LAST_ADDRESS..=DISPLAY_REFRESH_LAST_ADDRESS]
+    }
+
     /// Grab a u16 from two sequential bytes in the COSMAC RAM, which is big endian.
     /// Does not check alignment of address. Panics if accessing out of bounds memory.
     pub(crate) fn get_u16_at(&self, address: usize) -> u16 {

@@ -7,10 +7,12 @@
 mod test_utils;
 
 // Modules
+pub mod emulator;
 mod error;
 mod font;
 mod interpreter;
 pub mod memory;
+pub mod peripherals;
 mod rng;
 
 // Reexports
