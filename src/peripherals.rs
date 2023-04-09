@@ -37,7 +37,7 @@ impl Screen for Window {
             .flat_map(|pixel_byte| {
                 let mut color_pixels = [0x00FFFFFFu32; 8]; // default to 8 white pixels
                 for (i, rgb_pixel) in color_pixels.iter_mut().enumerate() {
-                    if (pixel_byte >> i) & 0b1000_0000 != 0 {
+                    if pixel_byte & (1 << (7 - i)) != 0 {
                         *rgb_pixel = 0; // make pixel black
                     }
                 }
