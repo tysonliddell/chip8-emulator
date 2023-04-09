@@ -1,10 +1,6 @@
 use std::fmt::{self, Debug};
 
 use crate::{
-    debug::{
-        panic_if_chip8_stack_empty_on_subroutine_return, panic_if_chip8_stack_full,
-        panic_if_i_address_out_of_bounds, panic_if_pc_address_not_in_chip8_program_range,
-    },
     font::{CHARACTER_BYTES, CHARACTER_MAP},
     memory::{
         CosmacRAM, DISPLAY_REFRESH_LAST_ADDRESS, DISPLAY_REFRESH_START_ADDRESS,
@@ -12,6 +8,12 @@ use crate::{
         PROGRAM_LAST_ADDRESS, PROGRAM_START_ADDRESS, STACK_START_ADDRESS,
     },
     rng::Chip8Rng,
+};
+
+#[cfg(debug_assertions)]
+use crate::debug::{
+    panic_if_chip8_stack_empty_on_subroutine_return, panic_if_chip8_stack_full,
+    panic_if_i_address_out_of_bounds, panic_if_pc_address_not_in_chip8_program_range,
 };
 
 pub struct Chip8State<'a> {
