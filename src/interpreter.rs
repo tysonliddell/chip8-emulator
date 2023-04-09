@@ -7,7 +7,8 @@ use crate::{
     },
     font::{CHARACTER_BYTES, CHARACTER_MAP},
     memory::{
-        CosmacRAM, INTERPRETER_WORK_AREA_START_ADDRESS, MEMORY_SIZE, MEMORY_START_ADDRESS,
+        CosmacRAM, DISPLAY_REFRESH_LAST_ADDRESS, DISPLAY_REFRESH_START_ADDRESS,
+        INTERPRETER_WORK_AREA_START_ADDRESS, MEMORY_SIZE, MEMORY_START_ADDRESS,
         PROGRAM_LAST_ADDRESS, PROGRAM_START_ADDRESS, STACK_START_ADDRESS,
     },
     rng::Chip8Rng,
@@ -438,11 +439,70 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
 
                 ram.set_u16_at(I_ADDRESS, i + x + 1);
             }
-            _ => {
-                #[cfg(debug_assertions)]
-                dbg!(Self::get_state(ram));
+            op if op == 0x00E0 => {
+                // Erase the display buffer
+                ram.zero_out_range(
+                    DISPLAY_REFRESH_START_ADDRESS..DISPLAY_REFRESH_START_ADDRESS + 256,
+                );
+            }
+            op if op & 0xF000 == 0xD000 => {
+                // DXYN instruction: show sprite pointed to by I at VX-VY coordinates
+                let x = (op & 0x0F00) >> 8;
+                let y = (op & 0x00F0) >> 4;
+                let n = (op & 0x000F) as u8;
+                let i = ram.get_u16_at(I_ADDRESS);
 
-                unimplemented!()
+                let pixel_col = ram.get_v_registers()[x as usize];
+                let pixel_row = ram.get_v_registers()[y as usize];
+
+                let byte_col = pixel_col / 8;
+                let pixel_col_offset = pixel_col % 8;
+                let byte_row = pixel_row;
+
+                let mut pixel_collision = false;
+                let mut current_display_byte_address =
+                    DISPLAY_REFRESH_START_ADDRESS + (byte_row as usize * 8) + byte_col as usize;
+                if pixel_row < 32 && pixel_col < 64 {
+                    for sprite_row in 0..n {
+                        if current_display_byte_address > DISPLAY_REFRESH_LAST_ADDRESS {
+                            break;
+                        }
+
+                        // split the 8 pixels of the current row of the sprite into two
+                        // bytes aligned with the display buffer
+                        let sprite_pixel_row = ram.bytes()[(i + sprite_row as u16) as usize];
+                        let left_byte_pixels = sprite_pixel_row >> pixel_col_offset;
+                        let mut left_byte = ram.bytes()[current_display_byte_address];
+                        if (left_byte_pixels & left_byte) != 0 {
+                            pixel_collision = true;
+                        }
+                        left_byte ^= left_byte_pixels;
+                        ram.load_bytes(&[left_byte], current_display_byte_address);
+                        if pixel_col_offset != 0 && byte_col < 7 {
+                            let right_byte_pixels = sprite_pixel_row << (8 - pixel_col_offset);
+                            let mut right_byte = ram.bytes()[current_display_byte_address + 1];
+                            if (right_byte_pixels & right_byte) != 0 {
+                                pixel_collision = true;
+                            }
+                            right_byte ^= right_byte_pixels;
+                            ram.load_bytes(&[right_byte], current_display_byte_address + 1);
+                        }
+
+                        // advance to the next row of pixels in the display buffer
+                        current_display_byte_address += 8;
+                    }
+                }
+                ram.get_v_registers_mut()[0xF] = if pixel_collision { 1 } else { 0 };
+            }
+            op if op & 0xF000 == 0x0000 => {
+                // Execute COSMAC VIP machine language subroutine
+                panic!(
+                    "Emulator does not support COSMAC VIP opcode 0MMM for jumping to \
+                    machine language subroutine."
+                )
+            }
+            _ => {
+                panic!("Unknown CHIP-8 instruction 0x{:0>4X}", instruction);
             }
         };
 
@@ -489,7 +549,7 @@ mod tests {
             HEX_KEY_DEPRESSED_FLAG, HEX_KEY_LAST_PRESSED_MASK, HEX_KEY_STATUS_ADDRESS, I_ADDRESS,
             PROGRAM_COUNTER_ADDRESS, TIMER_ADDRESS, TONE_TIMER_ADDRESS,
         },
-        memory::{CosmacRAM, PROGRAM_START_ADDRESS},
+        memory::{CosmacRAM, DISPLAY_REFRESH_START_ADDRESS, PROGRAM_START_ADDRESS},
         rng::MockChip8Rng,
         test_utils,
     };
@@ -1278,5 +1338,390 @@ mod tests {
 
         // check I incremented
         assert_eq!(ram.get_u16_at(I_ADDRESS), 0x0300 + 0xC + 1);
+    }
+
+    #[test]
+    fn erase_display() {
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+            0x00E0
+            NOOP
+        ));
+
+        // Set dummy data in the display refresh
+        ram.load_bytes(&[0xA5; 256], DISPLAY_REFRESH_START_ADDRESS)
+            .expect("256 bytes should fit in display refresh memory.");
+
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
+
+        assert_eq!(
+            &ram.bytes()[DISPLAY_REFRESH_START_ADDRESS..][..256],
+            &[0x00; 256]
+        );
+    }
+
+    #[test]
+    fn draw_sprite_of_size_zero() {
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+            0xD120
+            NOOP
+        ));
+
+        ram.zero_out_range(DISPLAY_REFRESH_START_ADDRESS..DISPLAY_REFRESH_START_ADDRESS + 256)
+            .expect("Should be able to zero out display refresh buffer.");
+        ram.set_u16_at(I_ADDRESS, 0x0300);
+        ram.load_bytes(&[0xAA; 16], 0x0300); // dummy data that should not move to display buffer
+        ram.get_v_registers_mut()[0xF] = 0xAA; // dummy VF value that should be overwritten to 0
+
+        // execute DXYN instruction
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
+
+        assert_eq!(
+            &ram.bytes()[DISPLAY_REFRESH_START_ADDRESS..][..256],
+            &[0x00; 256],
+            "Display buffer should be unchanged for sprite of size zero"
+        );
+        assert_eq!(
+            ram.get_u16_at(I_ADDRESS),
+            0x0300,
+            "DXYN instruction should leave I unchanged"
+        );
+        assert_eq!(
+            ram.get_v_registers()[0xF],
+            0x00,
+            "No pixels collisions so VF should be zero"
+        );
+    }
+
+    #[test]
+    fn draw_sprite_entirely_below_screen() {
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+            0xD12F
+            NOOP
+        ));
+
+        ram.zero_out_range(DISPLAY_REFRESH_START_ADDRESS..DISPLAY_REFRESH_START_ADDRESS + 256)
+            .expect("Should be able to zero out display refresh buffer.");
+        ram.set_u16_at(I_ADDRESS, 0x0300);
+        ram.load_bytes(&[0xAA; 16], 0x0300); // dummy data that should not move to display buffer
+        ram.get_v_registers_mut()[0xF] = 0xAA; // dummy VF value that should be overwritten to 0
+
+        let v1 = &mut ram.get_v_registers_mut()[1];
+        *v1 = 0; // horizontal: on screen
+        let v2 = &mut ram.get_v_registers_mut()[2];
+        *v2 = 32; // vertical: off screen (screen is 32 pixels high)
+
+        // execute DXYN instruction
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
+
+        assert_eq!(
+            &ram.bytes()[DISPLAY_REFRESH_START_ADDRESS..][..256],
+            &[0x00; 256],
+            "Display buffer should be unchanged for sprite drawn off screen"
+        );
+        assert_eq!(
+            ram.get_u16_at(I_ADDRESS),
+            0x0300,
+            "DXYN instruction should leave I unchanged"
+        );
+        assert_eq!(
+            ram.get_v_registers()[0xF],
+            0x00,
+            "No pixels collisions so VF should be zero"
+        );
+    }
+
+    #[test]
+    fn draw_sprite_entirely_to_right_of_screen() {
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+            0xD12F
+            NOOP
+        ));
+
+        ram.zero_out_range(DISPLAY_REFRESH_START_ADDRESS..DISPLAY_REFRESH_START_ADDRESS + 256)
+            .expect("Should be able to zero out display refresh buffer.");
+        ram.set_u16_at(I_ADDRESS, 0x0300);
+        ram.load_bytes(&[0xAA; 16], 0x0300); // dummy sprite data that should not move to display buffer
+        ram.get_v_registers_mut()[0xF] = 0xAA; // dummy VF value that should be overwritten to 0
+
+        let v1 = &mut ram.get_v_registers_mut()[1];
+        *v1 = 64; // horizontal: off screen (screen is 64 pixels wide)
+        let v2 = &mut ram.get_v_registers_mut()[2];
+        *v2 = 0; // vertical: on screen
+
+        // execute DXYN instruction
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
+
+        assert_eq!(
+            &ram.bytes()[DISPLAY_REFRESH_START_ADDRESS..][..256],
+            &[0x00; 256],
+            "Display buffer should be unchanged for sprite drawn off screen"
+        );
+        assert_eq!(
+            ram.get_u16_at(I_ADDRESS),
+            0x0300,
+            "DXYN instruction should leave I unchanged"
+        );
+        assert_eq!(
+            ram.get_v_registers()[0xF],
+            0x00,
+            "No pixels collisions so VF should be zero"
+        );
+    }
+
+    #[test]
+    fn draw_sprite_partially_cut_off_screen() {
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+            0xD12F
+            NOOP
+        ));
+
+        ram.zero_out_range(DISPLAY_REFRESH_START_ADDRESS..DISPLAY_REFRESH_START_ADDRESS + 256)
+            .expect("Should be able to zero out display refresh buffer.");
+        ram.set_u16_at(I_ADDRESS, 0x0300);
+        ram.load_bytes(&[0xFF; 16], 0x0300); // dummy sprite data
+        ram.get_v_registers_mut()[0xF] = 0xAA; // dummy VF value that should be overwritten to 0
+
+        let v1 = &mut ram.get_v_registers_mut()[1];
+        *v1 = 63; // horizontal: last pixel
+        let v2 = &mut ram.get_v_registers_mut()[2];
+        *v2 = 31; // vertical: last pixel
+
+        // execute DXYN instruction
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
+
+        assert_eq!(
+            &ram.bytes()[DISPLAY_REFRESH_START_ADDRESS..][..255],
+            &[0x00; 255],
+            "Display buffer should be unchanged where sprite not drawn"
+        );
+        assert_eq!(
+            ram.bytes()[DISPLAY_REFRESH_START_ADDRESS..][255],
+            0x01,
+            "Last pixel in buffer should be drawn"
+        );
+
+        assert_eq!(
+            ram.get_u16_at(I_ADDRESS),
+            0x0300,
+            "DXYN instruction should leave I unchanged"
+        );
+        assert_eq!(
+            ram.get_v_registers()[0xF],
+            0x00,
+            "No pixels collisions so VF should be zero"
+        );
+    }
+
+    #[test]
+    fn draw_sprite_within_screen_with_vx_aligned_to_display_buffer_bytes() {
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+            0xD122
+            NOOP
+        ));
+
+        ram.zero_out_range(DISPLAY_REFRESH_START_ADDRESS..DISPLAY_REFRESH_START_ADDRESS + 256)
+            .expect("Should be able to zero out display refresh buffer.");
+        ram.set_u16_at(I_ADDRESS, 0x0300);
+        ram.load_bytes(&[0xFF; 16], 0x0300); // dummy sprite data
+        ram.get_v_registers_mut()[0xF] = 0xAA; // dummy VF value that should be overwritten to 0
+
+        // Make sure the sprite position is aligned to display buffer bytes
+        let v1 = &mut ram.get_v_registers_mut()[1];
+        *v1 = 8; // a horizontal pixel offset aligned to display buffer bytes
+        let v2 = &mut ram.get_v_registers_mut()[2];
+        *v2 = 1; // second pixel row
+
+        // execute DXYN instruction
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
+
+        // Check pixels by checking the display buffer bytes.
+        // Each row is 64 pixels (8 bytes) wide.
+        // Since the VX coordinate is byte-aligned, we expect only the second
+        // byte for each of the 2 rows to be affected.
+        // This diagram shows the layout, where each X signifies a byte of
+        // display memory that should change by the DXYN instruction:
+        //   0 0 0 .
+        //   0 X 0 .
+        //   0 X 0 .
+        //   0 0 0 .
+        //   . . . .
+        assert_eq!(
+            &ram.bytes()[DISPLAY_REFRESH_START_ADDRESS..][..8],
+            &[0x00; 8],
+            "No pixels should be written to first row"
+        );
+        assert_eq!(
+            &ram.bytes()[DISPLAY_REFRESH_START_ADDRESS..][8..16],
+            &[0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            "Pixels should only be written to the second byte on the second row"
+        );
+        assert_eq!(
+            &ram.bytes()[DISPLAY_REFRESH_START_ADDRESS..][16..24],
+            &[0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            "Pixels should only be written to the second byte on the third row"
+        );
+        assert_eq!(
+            &ram.bytes()[DISPLAY_REFRESH_START_ADDRESS..][24..32],
+            &[0x00; 8],
+            "No pixels should be written to fourth row"
+        );
+
+        // check registers
+        assert_eq!(
+            ram.get_u16_at(I_ADDRESS),
+            0x0300,
+            "DXYN instruction should leave I unchanged"
+        );
+        assert_eq!(
+            ram.get_v_registers()[0xF],
+            0x00,
+            "No pixels collisions so VF should be zero"
+        );
+    }
+
+    #[test]
+    fn draw_sprite_within_screen_with_vx_not_aligned_to_display_buffer_bytes() {
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+            0xD122
+            NOOP
+        ));
+
+        ram.zero_out_range(DISPLAY_REFRESH_START_ADDRESS..DISPLAY_REFRESH_START_ADDRESS + 256)
+            .expect("Should be able to zero out display refresh buffer.");
+        ram.set_u16_at(I_ADDRESS, 0x0300);
+        ram.load_bytes(&[0xFF; 16], 0x0300); // dummy sprite data
+        ram.get_v_registers_mut()[0xF] = 0xAA; // dummy VF value that should be overwritten to 0
+
+        // Make sure the sprite position crosses display buffer byte boundaries
+        let v1 = &mut ram.get_v_registers_mut()[1];
+        *v1 = 2; // horizontal: third pixel
+        let v2 = &mut ram.get_v_registers_mut()[2];
+        *v2 = 2; // vertical: third pixel
+
+        // execute DXYN instruction
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
+
+        // Check pixels by checking the display buffer bytes.
+        // Each row is 64 pixels (8 bytes) wide.
+        // Expect the first two bytes for 2 rows to be affected.
+        // This diagram shows the layout, where each X signifies a byte of
+        // display memory that should change by the DXYN instruction:
+        //   0 0 0 .
+        //   0 0 0 .
+        //   X X 0 .
+        //   X X 0 .
+        //   0 0 0 .
+        //   . . . .
+        assert_eq!(
+            &ram.bytes()[DISPLAY_REFRESH_START_ADDRESS..][8..16],
+            &[0x00; 8],
+            "No pixels should be written to second row"
+        );
+        assert_eq!(
+            &ram.bytes()[DISPLAY_REFRESH_START_ADDRESS..][16..24],
+            &[0b0011_1111, 0b1100_0000, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            "Pixels should be written to the first two bytes of third row"
+        );
+        assert_eq!(
+            &ram.bytes()[DISPLAY_REFRESH_START_ADDRESS..][24..32],
+            &[0b0011_1111, 0b1100_0000, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            "Pixels should be written to the first two bytes of fourth row"
+        );
+        assert_eq!(
+            &ram.bytes()[DISPLAY_REFRESH_START_ADDRESS..][32..40],
+            &[0x00; 8],
+            "No pixels should be written to fifth row"
+        );
+
+        // check registers
+        assert_eq!(
+            ram.get_u16_at(I_ADDRESS),
+            0x0300,
+            "DXYN instruction should leave I unchanged"
+        );
+        assert_eq!(
+            ram.get_v_registers()[0xF],
+            0x00,
+            "No pixels collisions so VF should be zero"
+        );
+    }
+
+    #[test]
+    fn draw_sprite_xors_existing_data() {
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+            0xD121
+            NOOP
+        ));
+
+        ram.load_bytes(&[0xFF; 256], DISPLAY_REFRESH_START_ADDRESS)
+            .expect("Should be able to write to entire display refresh buffer.");
+        ram.set_u16_at(I_ADDRESS, 0x0300);
+        ram.load_bytes(&[0xAA; 1], 0x0300); // dummy sprite data to check xor
+        ram.get_v_registers_mut()[0xF] = 0xAA; // dummy VF value that should be overwritten to 1
+
+        // Make sure the sprite position crosses display buffer byte boundaries
+        let v1 = &mut ram.get_v_registers_mut()[1];
+        *v1 = 2; // horizontal: third pixel
+        let v2 = &mut ram.get_v_registers_mut()[2];
+        *v2 = 1; // vertical: second pixel
+
+        // execute DXYN instruction
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
+
+        // Check pixels by checking the display buffer bytes.
+        // Each row is 64 pixels (8 bytes) wide.
+        // Expect the first two bytes for 2 rows to be affected.
+        // This diagram shows the layout, where each X signifies a byte of
+        // display memory that should change by the DXYN instruction:
+        //   0 0 0 .
+        //   X X 0 .
+        //   0 0 0 .
+        //   . . . .
+        assert_eq!(
+            &ram.bytes()[DISPLAY_REFRESH_START_ADDRESS..][..8],
+            &[0xFF; 8],
+            "No new pixels should be written to first row"
+        );
+        assert_eq!(
+            &ram.bytes()[DISPLAY_REFRESH_START_ADDRESS..][8..16],
+            &[0b1101_0101, 0b0111_1111, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF],
+            "Pixels should be XORed to the first two bytes of second row"
+        );
+        assert_eq!(
+            &ram.bytes()[DISPLAY_REFRESH_START_ADDRESS..][16..24],
+            &[0xFF; 8],
+            "No new pixels should be written to third row"
+        );
+
+        // check registers
+        assert_eq!(
+            ram.get_u16_at(I_ADDRESS),
+            0x0300,
+            "DXYN instruction should leave I unchanged"
+        );
+        assert_eq!(
+            ram.get_v_registers()[0xF],
+            0x01,
+            "VF should be 0x01 since pixel collision occurred"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Unknown CHIP-8 instruction 0x9001")]
+    fn panic_on_unknown_opcode() {
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+            0x9001
+            NOOP
+        ));
+
+        chip8.step(&mut ram);
     }
 }
