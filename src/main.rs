@@ -3,7 +3,7 @@ use std::{
     io::{BufReader, Read},
 };
 
-use chip8_emulator::{emulator, peripherals::DummyPeripherals};
+use chip8_emulator::emulator;
 use minifb::{Scale, Window, WindowOptions};
 
 fn main() {
@@ -19,10 +19,6 @@ fn main() {
         Ok(bytes) => bytes,
     };
 
-    let dummy_peripherals = DummyPeripherals {};
-    let tone = &dummy_peripherals;
-    let hex_keyboard = &dummy_peripherals;
-
     let window_opts = WindowOptions {
         scale: Scale::X8,
         ..WindowOptions::default()
@@ -30,7 +26,7 @@ fn main() {
     let mut window = Window::new("CHIP-8 Emulator", 64, 32, window_opts)
         .expect("Expect window creation to succeed");
 
-    if let Err(e) = emulator::run(&chip8_program, tone, &mut window, hex_keyboard) {
+    if let Err(e) = emulator::run(&chip8_program, &mut window) {
         eprintln!("emulator error: {}", e);
         std::process::exit(1);
     }
