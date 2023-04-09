@@ -505,6 +505,62 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
                     machine language subroutine."
                 )
             }
+
+            // UNDOCUMENTED OPCODES
+            // The 8XY3, 8XYE, 8XY6 and 8XY7 opcodes are not documented in the
+            // RCA COSMAC VIP manual. However, the behaviour is present and
+            // many CHIP-8 programs rely in these instructions.
+            op if op & 0xF00F == 0x8003 => {
+                // Set VX = VX ^ VY
+                let x = (op & 0x0F00) >> 8;
+                let y = (op & 0x00F0) >> 4;
+
+                let vy_val = ram.get_v_registers()[y as usize];
+                let vx = &mut ram.get_v_registers_mut()[x as usize];
+                *vx ^= vy_val;
+            }
+            op if op & 0xF00F == 0x800E => {
+                // Set VX = VY << 1, VF set to overflow bit
+                let x = (op & 0x0F00) >> 8;
+                let y = (op & 0x00F0) >> 4;
+
+                let vy_val = ram.get_v_registers()[y as usize];
+                let overflow_bit = if vy_val & 0b1000_0000 != 0 { 1 } else { 0 };
+
+                let vx = &mut ram.get_v_registers_mut()[x as usize];
+                *vx = vy_val << 1;
+
+                let vf = &mut ram.get_v_registers_mut()[0xF];
+                *vf = overflow_bit;
+            }
+            op if op & 0xF00F == 0x8006 => {
+                // Set VX = VY >> 1, VF set to overflow bit
+                let x = (op & 0x0F00) >> 8;
+                let y = (op & 0x00F0) >> 4;
+
+                let vy_val = ram.get_v_registers()[y as usize];
+                let overflow_bit = vy_val & 0b0000_0001;
+
+                let vx = &mut ram.get_v_registers_mut()[x as usize];
+                *vx = vy_val >> 1;
+
+                let vf = &mut ram.get_v_registers_mut()[0xF];
+                *vf = overflow_bit;
+            }
+            op if op & 0xF00F == 0x8007 => {
+                // Set VX = VY - VX, VF set to borrow bit
+                let x = (op & 0x0F00) >> 8;
+                let y = (op & 0x00F0) >> 4;
+
+                let vy_val = ram.get_v_registers()[y as usize];
+                let vx = &mut ram.get_v_registers_mut()[x as usize];
+
+                let borrow = if vy_val < *vx { 0 } else { 1 };
+                *vx = vy_val.wrapping_sub(*vx);
+
+                let vf = &mut ram.get_v_registers_mut()[0xF];
+                *vf = borrow;
+            }
             _ => {
                 panic!("Unknown CHIP-8 instruction 0x{:0>4X}", instruction);
             }
@@ -1739,6 +1795,107 @@ mod tests {
             0x01,
             "VF should be 0x01 since pixel collision occurred"
         );
+    }
+
+    #[test]
+    fn set_vx_register_vx_bitwise_xor_vy() {
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+            0x8123
+            NOOP
+        ));
+
+        ram.get_v_registers_mut()[1] = 0b0011_0101;
+        ram.get_v_registers_mut()[2] = 0b0110_0110;
+        chip8.step(&mut ram);
+
+        assert_eq!(ram.get_v_registers()[1], 0b0101_0011);
+        assert_eq!(ram.get_v_registers()[2], 0b0110_0110);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
+    }
+
+    #[test]
+    fn set_vx_register_vy_lshift() {
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+            0x812E
+            0x811E
+            NOOP
+        ));
+
+        ram.get_v_registers_mut()[0x1] = 0x00;
+        ram.get_v_registers_mut()[0x2] = 0b0110_0110;
+        ram.get_v_registers_mut()[0xF] = 0xFF; // dummy value to be overwritten
+
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_v_registers()[0x1], 0b1100_1100); // vx = vy << 1
+        assert_eq!(ram.get_v_registers()[0x2], 0b0110_0110); // vy unchanged
+        assert_eq!(ram.get_v_registers()[0xF], 0x00); // no overflow
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
+
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_v_registers()[0x1], 0b1001_1000); // vx = vx << 1
+        assert_eq!(ram.get_v_registers()[0xF], 0x01); // overflow
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x204);
+    }
+
+    #[test]
+    fn set_vx_register_vy_rshift() {
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+            0x8126
+            0x8116
+            NOOP
+        ));
+
+        ram.get_v_registers_mut()[0x1] = 0x00;
+        ram.get_v_registers_mut()[0x2] = 0b0110_0110;
+        ram.get_v_registers_mut()[0xF] = 0xFF; // dummy value to be overwritten
+
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_v_registers()[0x1], 0b0011_0011); // vx = vy >> 1
+        assert_eq!(ram.get_v_registers()[0x2], 0b0110_0110); // vy unchanged
+        assert_eq!(ram.get_v_registers()[0xF], 0x00); // no overflow
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
+
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_v_registers()[0x1], 0b0001_1001); // vx = vx >> 1
+        assert_eq!(ram.get_v_registers()[0xF], 0x01); // overflow
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x204);
+    }
+
+    #[test]
+    fn set_vx_register_vy_sub_vx() {
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+            0x8017
+            0x8237
+            0x8457
+            NOOP
+        ));
+
+        // vy == vx
+        ram.get_v_registers_mut()[0x0] = 0xF0;
+        ram.get_v_registers_mut()[0x1] = 0xF0;
+
+        // vy < vx
+        ram.get_v_registers_mut()[0x2] = 0xF0;
+        ram.get_v_registers_mut()[0x3] = 0x0F;
+
+        // vy > vx
+        ram.get_v_registers_mut()[0x4] = 0x0F;
+        ram.get_v_registers_mut()[0x5] = 0xF0;
+
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_v_registers()[0x0], 0x00);
+        assert_eq!(ram.get_v_registers()[0x1], 0xF0);
+        assert_eq!(ram.get_v_registers()[0xF], 0x01); // carry should be one
+
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_v_registers()[0x2], 0x1F);
+        assert_eq!(ram.get_v_registers()[0x3], 0x0F);
+        assert_eq!(ram.get_v_registers()[0xF], 0x00); // carry should be zero
+
+        chip8.step(&mut ram);
+        assert_eq!(ram.get_v_registers()[0x4], 0xE1);
+        assert_eq!(ram.get_v_registers()[0x5], 0xF0);
+        assert_eq!(ram.get_v_registers()[0xF], 0x01); // carry should be one
     }
 
     #[test]
