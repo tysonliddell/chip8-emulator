@@ -4,6 +4,7 @@ use std::{
 };
 
 use chip8_emulator::{emulator, peripherals::DummyPeripherals};
+use minifb::{Scale, Window, WindowOptions};
 
 fn main() {
     let config = cli::parse_args();
@@ -20,10 +21,16 @@ fn main() {
 
     let dummy_peripherals = DummyPeripherals {};
     let tone = &dummy_peripherals;
-    let display_renderer = &dummy_peripherals;
     let hex_keyboard = &dummy_peripherals;
 
-    if let Err(e) = emulator::run(&chip8_program, tone, display_renderer, hex_keyboard) {
+    let window_opts = WindowOptions {
+        scale: Scale::X8,
+        ..WindowOptions::default()
+    };
+    let mut window = Window::new("CHIP-8 Emulator", 64, 32, window_opts)
+        .expect("Expect window creation to succeed");
+
+    if let Err(e) = emulator::run(&chip8_program, tone, &mut window, hex_keyboard) {
         eprintln!("emulator error: {}", e);
         std::process::exit(1);
     }
