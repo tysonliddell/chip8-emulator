@@ -25,6 +25,7 @@ pub struct Chip8State<'a> {
     pub tone_timer: u16,
     pub hex_key_status: u16,
     pub v_registers: &'a [u8],
+    pub display_buffer: &'a [u8],
 }
 
 impl<'a> Debug for Chip8State<'a> {
@@ -56,6 +57,7 @@ impl<'a> Debug for Chip8State<'a> {
             .field("VD", &format!("0x{:0>4X}", self.v_registers[13]))
             .field("VE", &format!("0x{:0>4X}", self.v_registers[14]))
             .field("VF", &format!("0x{:0>4X}", self.v_registers[15]))
+            .field("Display buffer", &format!("{:?}", self.display_buffer))
             .finish()
     }
 }
@@ -118,9 +120,6 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
     /// - Out of bounds memory?
     /// - looping forever?
     pub fn step(&self, ram: &mut CosmacRAM) {
-        #[cfg(debug_assertions)]
-        dbg!(Self::get_state(ram));
-
         let instruction_address = ram.get_u16_at(PROGRAM_COUNTER_ADDRESS) as usize;
         let instruction = ram.get_u16_at(instruction_address);
 
@@ -532,6 +531,7 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
             tone_timer: ram.get_u16_at(TONE_TIMER_ADDRESS),
             hex_key_status: ram.get_u16_at(HEX_KEY_STATUS_ADDRESS),
             v_registers: ram.get_v_registers(),
+            display_buffer: ram.display_buffer(),
         }
     }
 

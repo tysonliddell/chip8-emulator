@@ -78,7 +78,7 @@
 
 use std::ops::Range;
 
-use crate::{Error, Result};
+use crate::{interpreter::I_ADDRESS, Error, Result};
 const SMALL_MEMORY_SIZE: usize = 0x0800; // The 2K system
 const LARGE_MEMORY_SIZE: usize = 0x1000; // The beefier 4K system
 pub const MEMORY_SIZE: usize = LARGE_MEMORY_SIZE;
@@ -196,6 +196,11 @@ impl CosmacRAM {
     /// Get the slice of RAM that holds the CHIP-8 display buffer.
     pub fn display_buffer(&self) -> &[u8] {
         &self.data[DISPLAY_REFRESH_START_ADDRESS..=DISPLAY_REFRESH_LAST_ADDRESS]
+    }
+
+    pub fn get_i_data(&self) -> &[u8] {
+        let i = self.get_u16_at(I_ADDRESS);
+        &self.bytes()[i as usize..][..16]
     }
 
     /// Grab a u16 from two sequential bytes in the COSMAC RAM, which is big endian.

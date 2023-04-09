@@ -30,6 +30,20 @@ where
     chip8.reset(&mut ram);
 
     loop {
+        #[cfg(debug_assertions)]
+        {
+            eprintln!("Before instruction");
+            dbg!(Chip8::get_state(&ram));
+        }
+
+        chip8.step(&mut ram);
+
+        #[cfg(debug_assertions)]
+        {
+            eprintln!("After instruction");
+            dbg!(Chip8::get_state(&ram));
+        }
+
         // update display
         // FIXME: Probably don't have to update the display on every cycle.
         display_renderer.draw_buffer(ram.display_buffer());
@@ -45,7 +59,6 @@ where
         // set hex key press state
         Chip8::set_current_key_press(&mut ram, hex_keyboard.get_current_pressed_key());
 
-        chip8.step(&mut ram);
         sleep(MICRO_SEC_PER_INSTRUCTION);
     }
 }
