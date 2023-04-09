@@ -195,7 +195,7 @@ impl CosmacRAM {
 
     /// Get the slice of RAM that holds the CHIP-8 display buffer.
     pub fn display_buffer(&self) -> &[u8] {
-        &self.data[DISPLAY_REFRESH_LAST_ADDRESS..=DISPLAY_REFRESH_LAST_ADDRESS]
+        &self.data[DISPLAY_REFRESH_START_ADDRESS..=DISPLAY_REFRESH_LAST_ADDRESS]
     }
 
     /// Grab a u16 from two sequential bytes in the COSMAC RAM, which is big endian.

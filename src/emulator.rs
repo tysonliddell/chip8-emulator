@@ -15,7 +15,7 @@ const MICRO_SEC_PER_INSTRUCTION: Duration = Duration::from_micros(1_000_000 / 60
 pub fn run<T, U, V>(
     chip8_program: &[u8],
     tone: &T,
-    display_renderer: &U,
+    display_renderer: &mut U,
     hex_keyboard: &V,
 ) -> Result<()>
 where
@@ -31,9 +31,8 @@ where
 
     loop {
         // update display
-        for row in ram.display_buffer().chunks(BYTES_PER_SCANLINE) {
-            display_renderer.draw_monochrome_scanline(row);
-        }
+        // FIXME: Probably don't have to update the display on every cycle.
+        display_renderer.draw_buffer(ram.display_buffer());
 
         // update tone
         let tone_should_be_sounding = Chip8::is_tone_sounding(&ram);
