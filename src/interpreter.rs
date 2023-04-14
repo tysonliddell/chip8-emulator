@@ -1,4 +1,13 @@
-use std::fmt::{self, Debug};
+use std::{
+    fmt::{self, Debug},
+    time::Duration,
+};
+
+#[cfg(test)]
+use mock_instant::Instant;
+
+#[cfg(not(test))]
+use std::time::Instant;
 
 use crate::{
     font::{CHARACTER_BYTES, CHARACTER_MAP},
@@ -82,11 +91,17 @@ pub(crate) const DISPLAY_WIDTH_PIXELS: usize = 64;
 
 pub struct Chip8Interpreter<T: Chip8Rng = fastrand::Rng> {
     rng: T,
+    timer_expiry: Option<Instant>,
+    tone_expiry: Option<Instant>,
 }
 
 impl<T: Chip8Rng> Chip8Interpreter<T> {
     pub fn new(rng: T) -> Self {
-        Self { rng }
+        Self {
+            rng,
+            timer_expiry: None,
+            tone_expiry: None,
+        }
     }
 
     pub fn reset(&self, ram: &mut CosmacRAM) {
@@ -119,18 +134,32 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
     /// # Bad programs
     /// - Out of bounds memory?
     /// - looping forever?
-    pub fn step(&self, ram: &mut CosmacRAM) {
+    pub fn step(&mut self, ram: &mut CosmacRAM) {
         let instruction_address = ram.get_u16_at(PROGRAM_COUNTER_ADDRESS) as usize;
         let instruction = ram.get_u16_at(instruction_address);
 
-        let timer = ram.get_u16_at(TIMER_ADDRESS);
-        if timer > 0 {
-            ram.set_u16_at(TIMER_ADDRESS, timer - 1);
+        if let Some(expiry) = self.timer_expiry {
+            let now = Instant::now();
+            let jiffies_left = if expiry <= now {
+                // 1 jiffy = 1/60 seconds
+                self.timer_expiry = None;
+                0
+            } else {
+                ((expiry - Instant::now()).as_millis() * 60) / 1000
+            };
+            ram.set_u16_at(TIMER_ADDRESS, jiffies_left as u16);
         }
 
-        let tone_timer = ram.get_u16_at(TONE_TIMER_ADDRESS);
-        if tone_timer > 0 {
-            ram.set_u16_at(TONE_TIMER_ADDRESS, tone_timer - 1);
+        if let Some(expiry) = self.tone_expiry {
+            let now = Instant::now();
+            let jiffies_left = if expiry <= now {
+                // 1 jiffy = 1/60 seconds
+                self.tone_expiry = None;
+                0
+            } else {
+                ((expiry - Instant::now()).as_millis() * 60) / 1000
+            };
+            ram.set_u16_at(TONE_TIMER_ADDRESS, jiffies_left as u16);
         }
 
         let hex_key_status = ram.get_u16_at(HEX_KEY_STATUS_ADDRESS);
@@ -371,14 +400,20 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
             op if op & 0xF0FF == 0xF015 => {
                 // Set timer = VX (01 = 1/60 seconds)
                 let x = (op & 0x0F00) >> 8;
-                let vx_val = ram.get_v_registers()[x as usize];
-                ram.set_u16_at(TIMER_ADDRESS, vx_val as u16);
+                let jiffies = ram.get_v_registers()[x as usize];
+
+                self.timer_expiry =
+                    Some(Instant::now() + Duration::from_millis((jiffies as u64 * 1000) / 60));
+                ram.set_u16_at(TIMER_ADDRESS, jiffies as u16);
             }
             op if op & 0xF0FF == 0xF018 => {
                 // Set tone duration = VX (01 = 1/60 seconds)
                 let x = (op & 0x0F00) >> 8;
-                let vx_val = ram.get_v_registers()[x as usize];
-                ram.set_u16_at(TONE_TIMER_ADDRESS, vx_val as u16);
+                let jiffies = ram.get_v_registers()[x as usize];
+
+                self.tone_expiry =
+                    Some(Instant::now() + Duration::from_millis((jiffies as u64 * 1000) / 60));
+                ram.set_u16_at(TONE_TIMER_ADDRESS, jiffies as u16);
             }
             op if op & 0xF000 == 0xA000 => {
                 // Set I = 0MMM
@@ -625,7 +660,9 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
 
 #[cfg(test)]
 mod tests {
-    use std::iter;
+    use std::{iter, time::Duration};
+
+    use mock_instant::MockClock;
 
     use crate::{
         interpreter::{
@@ -639,11 +676,14 @@ mod tests {
 
     use super::Chip8Interpreter;
 
+    const APPROX_JIFFY: Duration = Duration::from_millis(1000 / 60);
+    const MILLISECOND: Duration = Duration::from_millis(1);
+
     // Checks that a section of a CHIP-8 program steps through a sequence of
     // instruction addresses
     fn assert_address_sequence<I>(
         addresses: I,
-        chip8: &Chip8Interpreter<MockChip8Rng>,
+        chip8: &mut Chip8Interpreter<MockChip8Rng>,
         ram: &mut CosmacRAM,
     ) where
         I: Iterator<Item = u16>,
@@ -668,7 +708,7 @@ mod tests {
 
     #[test]
     fn jump() {
-        let (mut ram, chip8) = new_chip8_with_program(&chip8_program_into_bytes!(0x1234));
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(0x1234));
 
         assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x0200);
         chip8.step(&mut ram);
@@ -677,7 +717,7 @@ mod tests {
 
     #[test]
     fn unconditional_jump_with_offset() {
-        let (mut ram, chip8) = new_chip8_with_program(&chip8_program_into_bytes!(0xB234));
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(0xB234));
 
         let v0 = &mut ram.get_v_registers_mut()[0];
         *v0 = 0xAA;
@@ -689,7 +729,7 @@ mod tests {
 
     #[test]
     fn subroutine() {
-        let (mut ram, chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
             0x2204  // 0x0200, jump to 0x0204 subroutine
             0x1208  // 0x0202, jump to end of program
             NOOP    // 0x0204
@@ -698,12 +738,12 @@ mod tests {
         ));
 
         let expected_address_sequence = [0x0200u16, 0x0204, 0x0206, 0x0202, 0x0208].into_iter();
-        assert_address_sequence(expected_address_sequence, &chip8, &mut ram);
+        assert_address_sequence(expected_address_sequence, &mut chip8, &mut ram);
     }
 
     #[test]
     fn nested_subroutines() {
-        let (mut ram, chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
             // a program the dives into 12 nested subroutines then immediately
             // returns from each.
             0x2204      // 0x0200
@@ -752,12 +792,12 @@ mod tests {
             .chain(unwinding_the_stack)
             .chain(final_jump);
 
-        assert_address_sequence(expected_address_sequence, &chip8, &mut ram);
+        assert_address_sequence(expected_address_sequence, &mut chip8, &mut ram);
     }
 
     #[test]
     fn skip_instruction_if_vx_eq_kk() {
-        let (mut ram, chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
             0x3744  // 44 != 55, no skip expected
             0x3755  // 44 == 55, skip expected
             NOOP
@@ -767,12 +807,12 @@ mod tests {
         ram.get_v_registers_mut()[7] = 0x55;
 
         let expected_address_sequence = [0x0200, 0x0202, 0x0206].into_iter();
-        assert_address_sequence(expected_address_sequence, &chip8, &mut ram);
+        assert_address_sequence(expected_address_sequence, &mut chip8, &mut ram);
     }
 
     #[test]
     fn skip_instruction_if_vx_neq_kk() {
-        let (mut ram, chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
             0x4744  // 44 == 44, no skip expected
             0x4755  // 55 != 44, skip expected
             NOOP
@@ -782,12 +822,12 @@ mod tests {
         ram.get_v_registers_mut()[7] = 0x44;
 
         let expected_address_sequence = [0x0200, 0x0202, 0x0206].into_iter();
-        assert_address_sequence(expected_address_sequence, &chip8, &mut ram);
+        assert_address_sequence(expected_address_sequence, &mut chip8, &mut ram);
     }
 
     #[test]
     fn skip_instruction_if_vx_eq_vy() {
-        let (mut ram, chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
             0x5120
             NOOP
             NOOP
@@ -812,7 +852,7 @@ mod tests {
 
     #[test]
     fn skip_instruction_if_vx_neq_vy() {
-        let (mut ram, chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
             0x9120
             NOOP
             NOOP
@@ -837,7 +877,7 @@ mod tests {
 
     #[test]
     fn skip_instruction_if_vx_eq_hex_key_depressed_and_eq() {
-        let (mut ram, chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
             0xE79E
             NOOP
             NOOP
@@ -851,7 +891,7 @@ mod tests {
 
     #[test]
     fn skip_instruction_if_vx_eq_hex_key_depressed_and_neq() {
-        let (mut ram, chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
             0xE79E
             NOOP
             NOOP
@@ -866,7 +906,7 @@ mod tests {
 
     #[test]
     fn skip_instruction_if_vx_eq_hex_key_released_and_eq() {
-        let (mut ram, chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
             0xE79E
             NOOP
             NOOP
@@ -882,7 +922,7 @@ mod tests {
 
     #[test]
     fn skip_instruction_if_vx_eq_hex_key_released_and_neq() {
-        let (mut ram, chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
             0xE79E
             NOOP
             NOOP
@@ -898,7 +938,7 @@ mod tests {
 
     #[test]
     fn skip_instruction_if_vx_neq_hex_key_depressed_and_eq() {
-        let (mut ram, chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
             0xE7A1
             NOOP
             NOOP
@@ -912,7 +952,7 @@ mod tests {
 
     #[test]
     fn skip_instruction_if_vx_neq_hex_key_depressed_and_neq() {
-        let (mut ram, chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
             0xE7A1
             NOOP
             NOOP
@@ -927,7 +967,7 @@ mod tests {
 
     #[test]
     fn skip_instruction_if_vx_neq_hex_key_released_and_eq() {
-        let (mut ram, chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
             0xE7A1
             NOOP
             NOOP
@@ -943,7 +983,7 @@ mod tests {
 
     #[test]
     fn skip_instruction_if_vx_neq_hex_key_released_and_neq() {
-        let (mut ram, chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
             0xE7A1
             NOOP
             NOOP
@@ -959,7 +999,7 @@ mod tests {
 
     #[test]
     fn set_vx_register_constant() {
-        let (mut ram, chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
+        let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
             0x6499
             NOOP
         ));
@@ -1126,16 +1166,21 @@ mod tests {
     #[test]
     fn set_vx_register_to_current_timer_value() {
         let (mut ram, mut chip8) = new_chip8_with_program(&chip8_program_into_bytes!(
-            0xF407
+            0xF315      // set the timer value = V3
+            0xF407      // set V4 = timer value
             NOOP
         ));
+        ram.get_v_registers_mut()[4] = 0xFF; // data to overwrite
 
-        ram.set_u16_at(TIMER_ADDRESS, 0x77);
-        ram.get_v_registers_mut()[4] = 0xFF;
+        // sets timer value to 77 jiffies
+        ram.get_v_registers_mut()[3] = 0x77;
         chip8.step(&mut ram);
 
-        assert_eq!(ram.get_v_registers()[4], 0x77 - 1);
-        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
+        MockClock::advance(9 * APPROX_JIFFY);
+        chip8.step(&mut ram);
+
+        assert_eq!(ram.get_v_registers()[4], 0x77 - 9);
+        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x204);
     }
 
     #[test]
@@ -1208,18 +1253,19 @@ mod tests {
 
         chip8.step(&mut ram);
         assert_eq!(ram.get_u16_at(TIMER_ADDRESS), 0x02);
-        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
 
+        MockClock::advance(APPROX_JIFFY - MILLISECOND);
         chip8.step(&mut ram);
         assert_eq!(ram.get_u16_at(TIMER_ADDRESS), 0x01);
-        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x204);
 
+        MockClock::advance(2 * MILLISECOND);
         chip8.step(&mut ram);
         assert_eq!(ram.get_u16_at(TIMER_ADDRESS), 0x00);
-        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x206);
 
+        MockClock::advance(Duration::from_secs(1));
         chip8.step(&mut ram);
         assert_eq!(ram.get_u16_at(TIMER_ADDRESS), 0x00);
+
         assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x208);
     }
 
@@ -1233,23 +1279,24 @@ mod tests {
             NOOP
         ));
 
-        ram.get_v_registers_mut()[7] = 0x2;
+        ram.get_v_registers_mut()[7] = 0x02;
         assert_eq!(ram.get_u16_at(TONE_TIMER_ADDRESS), 0x00);
 
         chip8.step(&mut ram);
         assert_eq!(ram.get_u16_at(TONE_TIMER_ADDRESS), 0x02);
-        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x202);
 
+        MockClock::advance(APPROX_JIFFY - MILLISECOND);
         chip8.step(&mut ram);
         assert_eq!(ram.get_u16_at(TONE_TIMER_ADDRESS), 0x01);
-        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x204);
 
+        MockClock::advance(2 * MILLISECOND);
         chip8.step(&mut ram);
         assert_eq!(ram.get_u16_at(TONE_TIMER_ADDRESS), 0x00);
-        assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x206);
 
+        MockClock::advance(Duration::from_secs(1));
         chip8.step(&mut ram);
         assert_eq!(ram.get_u16_at(TONE_TIMER_ADDRESS), 0x00);
+
         assert_eq!(ram.get_u16_at(PROGRAM_COUNTER_ADDRESS), 0x208);
     }
 

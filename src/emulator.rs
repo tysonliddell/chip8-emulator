@@ -1,7 +1,10 @@
-use std::{thread::sleep, time::Duration};
+use std::{
+    thread::sleep,
+    time::{Duration, Instant},
+};
 
 use crate::{
-    interpreter::{Chip8Interpreter, DISPLAY_WIDTH_PIXELS},
+    interpreter::{Chip8Interpreter, DISPLAY_WIDTH_PIXELS, PROGRAM_COUNTER_ADDRESS},
     memory::CosmacRAM,
     peripherals::{HexKeyboard, Screen, Tone},
     Result,
@@ -9,8 +12,8 @@ use crate::{
 
 type Chip8 = Chip8Interpreter<fastrand::Rng>;
 
-const BYTES_PER_SCANLINE: usize = DISPLAY_WIDTH_PIXELS / 8;
-const MICRO_SEC_PER_INSTRUCTION: Duration = Duration::from_micros(1_000_000 / 60);
+const INSTRUCTIONS_FREQ_HZ: u64 = 700; // number of CHIP-8 instructions performed per second
+const INSTRUCTION_DURATION: Duration = Duration::from_micros(1_000_000 / INSTRUCTIONS_FREQ_HZ);
 
 pub fn run<T>(chip8_program: &[u8], peripherals: &mut T) -> Result<()>
 where
@@ -19,9 +22,12 @@ where
     let mut ram = CosmacRAM::new();
     ram.load_chip8_program(chip8_program)?;
 
-    let chip8 = Chip8::new(fastrand::Rng::new());
+    let mut chip8 = Chip8::new(fastrand::Rng::new());
     chip8.reset(&mut ram);
+    peripherals.draw_buffer(ram.display_buffer());
 
+    let mut frame_count = 0u32;
+    let program_start_time = Instant::now();
     loop {
         #[cfg(debug_assertions)]
         {
@@ -38,8 +44,12 @@ where
         }
 
         // update display
-        // FIXME: Probably don't have to update the display on every cycle.
-        peripherals.draw_buffer(ram.display_buffer());
+        let pc = ram.get_u16_at(PROGRAM_COUNTER_ADDRESS);
+        let instruction = ram.get_u16_at(pc as usize);
+        if instruction & 0xD000 == 0xD000 {
+            // display instruction
+            peripherals.draw_buffer(ram.display_buffer());
+        }
 
         // update tone
         let tone_should_be_sounding = Chip8::is_tone_sounding(&ram);
@@ -52,6 +62,11 @@ where
         // set hex key press state
         Chip8::set_current_key_press(&mut ram, peripherals.get_current_pressed_key());
 
-        sleep(MICRO_SEC_PER_INSTRUCTION);
+        // sleep the required amount of time to maintain CLOCK_FREQ_HZ instructions per second
+        frame_count += 1;
+        let target_end_instruction_time = program_start_time + (frame_count * INSTRUCTION_DURATION);
+        let sleep_for =
+            target_end_instruction_time - Instant::now().min(target_end_instruction_time);
+        sleep(sleep_for);
     }
 }
