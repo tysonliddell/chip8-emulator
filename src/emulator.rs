@@ -15,16 +15,17 @@ type Chip8 = Chip8Interpreter<fastrand::Rng>;
 const INSTRUCTIONS_FREQ_HZ: u64 = 700; // number of CHIP-8 instructions performed per second
 const INSTRUCTION_DURATION: Duration = Duration::from_micros(1_000_000 / INSTRUCTIONS_FREQ_HZ);
 
-pub fn run<T>(chip8_program: &[u8], peripherals: &mut T) -> Result<()>
+pub fn run<T, U>(chip8_program: &[u8], window: &mut T, audio: &U) -> Result<()>
 where
-    T: Tone + Screen + HexKeyboard,
+    T: Screen + HexKeyboard,
+    U: Tone,
 {
     let mut ram = CosmacRAM::new();
     ram.load_chip8_program(chip8_program)?;
 
     let mut chip8 = Chip8::new(fastrand::Rng::new());
     chip8.reset(&mut ram);
-    peripherals.draw_buffer(ram.display_buffer());
+    window.draw_buffer(ram.display_buffer());
 
     let mut frame_count = 0u32;
     let program_start_time = Instant::now();
@@ -48,19 +49,19 @@ where
         let instruction = ram.get_u16_at(pc as usize);
         if instruction & 0xD000 == 0xD000 {
             // display instruction
-            peripherals.draw_buffer(ram.display_buffer());
+            window.draw_buffer(ram.display_buffer());
         }
 
         // update tone
         let tone_should_be_sounding = Chip8::is_tone_sounding(&ram);
-        if tone_should_be_sounding && !peripherals.is_tone_on() {
-            peripherals.start_tone();
-        } else if !tone_should_be_sounding && peripherals.is_tone_on() {
-            peripherals.stop_tone();
+        if tone_should_be_sounding && !audio.is_tone_on() {
+            audio.start_tone();
+        } else if !tone_should_be_sounding && audio.is_tone_on() {
+            audio.stop_tone();
         }
 
         // set hex key press state
-        Chip8::set_current_key_press(&mut ram, peripherals.get_current_pressed_key());
+        Chip8::set_current_key_press(&mut ram, window.get_current_pressed_key());
 
         // sleep the required amount of time to maintain CLOCK_FREQ_HZ instructions per second
         frame_count += 1;
