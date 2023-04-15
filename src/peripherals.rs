@@ -48,7 +48,7 @@ impl Screen for Window {
             })
             .collect();
         self.update_with_buffer(&buffer, DISPLAY_WIDTH_PIXELS, DISPLAY_HEIGHT_PIXELS)
-            .unwrap();
+            .expect("Should be ok to update the window display buffer");
     }
 }
 
@@ -83,8 +83,10 @@ pub struct Beeper {
 
 impl Beeper {
     pub fn new(freq_hz: u32) -> Self {
-        let (_stream, stream_handle) = OutputStream::try_default().unwrap();
-        let sink = Sink::try_new(&stream_handle).unwrap();
+        let (_stream, stream_handle) = OutputStream::try_default()
+            .expect("Should be able to obtain an output stream for audio");
+        let sink = Sink::try_new(&stream_handle)
+            .expect("Should be able to create Sink from output stream.");
         sink.pause();
 
         let source = source::SineWave::new(freq_hz as f32)

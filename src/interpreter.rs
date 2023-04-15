@@ -122,15 +122,15 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
     /// CHIP-8 program counter, and advance the program counter to point to the
     /// next instruction to execute.
     ///
-    /// # Errors
-    /// TODO
-    ///
     /// # Panics
-    /// TODO
-    ///
-    /// # Bad programs
-    /// - Out of bounds memory?
-    /// - looping forever?
+    /// Will panic if the CHIP-8 program being executed attempts to:
+    ///   - Set the CHIP-8 program counter, through a jump or otherwise, or `I` address
+    ///     to an address outside of the area of memory allowed for CHIP-8 programs.
+    ///   - Run an instruction that's not part of the CHIP-8 instruction set.
+    ///   - Exceed the capacity of the CHIP-8 stack by running more than 12 subroutines
+    ///     at once.
+    ///   - Return from a subroutine when not currently in a subroutine.
+    ///   - Execute a 0MMM instruction to call a machine code routine.
     pub fn step(&mut self, ram: &mut CosmacRAM) {
         let instruction_address = ram.get_u16_at(PROGRAM_COUNTER_ADDRESS) as usize;
         let instruction = ram.get_u16_at(instruction_address);
