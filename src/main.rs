@@ -3,8 +3,10 @@ use std::{
     io::{BufReader, Read},
 };
 
-use chip8_emulator::emulator;
+use chip8_emulator::{emulator, peripherals::Beeper};
 use minifb::{Scale, Window, WindowOptions};
+
+const TONE_FREQ_HZ: u32 = 440;
 
 fn main() {
     let config = cli::parse_args();
@@ -27,7 +29,10 @@ fn main() {
         .expect("Expect window creation to succeed");
     window.limit_update_rate(None); // FPS is controlled in the emulator logic (should it be?)
 
-    if let Err(e) = emulator::run(&chip8_program, &mut window) {
+    // audio
+    let beeper = Beeper::new(TONE_FREQ_HZ);
+
+    if let Err(e) = emulator::run(&chip8_program, &mut window, &beeper) {
         eprintln!("emulator error: {}", e);
         std::process::exit(1);
     }
