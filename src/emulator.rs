@@ -12,7 +12,7 @@ use crate::{
 
 type Chip8 = Chip8Interpreter<fastrand::Rng>;
 
-const INSTRUCTIONS_FREQ_HZ: u64 = 700; // number of CHIP-8 instructions performed per second
+const INSTRUCTIONS_FREQ_HZ: u64 = 300; // number of CHIP-8 instructions performed per second
 const INSTRUCTION_DURATION: Duration = Duration::from_micros(1_000_000 / INSTRUCTIONS_FREQ_HZ);
 
 pub fn run<T, U>(chip8_program: &[u8], window: &mut T, audio: &U) -> Result<()>
