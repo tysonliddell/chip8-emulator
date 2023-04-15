@@ -11,3 +11,6 @@ Emulates the original CHIP-8 for the COSMAC VIP as described by Joseph Weisbecke
 - Run tests with `cargo test`.
 - Run the emulator with `cargo run`.
 - Set up optional submodules with `git submodule init && git submodule update`.
+
+## Running the emulator
+- Run with `cargo run --release -- <PATH_TO_ROM>`
