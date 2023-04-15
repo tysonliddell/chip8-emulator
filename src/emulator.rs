@@ -45,12 +45,10 @@ where
         }
 
         // update display
-        let pc = ram.get_u16_at(PROGRAM_COUNTER_ADDRESS);
-        let instruction = ram.get_u16_at(pc as usize);
-        if instruction & 0xD000 == 0xD000 {
-            // display instruction
-            window.draw_buffer(ram.display_buffer());
-        }
+        // we need to do this for every frame because the underlying rendering code/event
+        // loop used by Cocoa/minifb on Mac gets stuck sometimes if we only update on a DXYN
+        // instruction.
+        window.draw_buffer(ram.display_buffer());
 
         // update tone
         let tone_should_be_sounding = Chip8::is_tone_sounding(&ram);
