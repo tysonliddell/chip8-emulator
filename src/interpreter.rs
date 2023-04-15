@@ -1,7 +1,4 @@
-use std::{
-    fmt::{self, Debug},
-    time::Duration,
-};
+use std::{fmt::Debug, time::Duration};
 
 #[cfg(test)]
 use mock_instant::Instant;
@@ -13,8 +10,8 @@ use crate::{
     font::{CHARACTER_BYTES, CHARACTER_MAP},
     memory::{
         CosmacRAM, DISPLAY_REFRESH_LAST_ADDRESS, DISPLAY_REFRESH_START_ADDRESS,
-        INTERPRETER_WORK_AREA_START_ADDRESS, MEMORY_SIZE, MEMORY_START_ADDRESS,
-        PROGRAM_LAST_ADDRESS, PROGRAM_START_ADDRESS, STACK_START_ADDRESS,
+        INTERPRETER_WORK_AREA_START_ADDRESS, MEMORY_SIZE, PROGRAM_START_ADDRESS,
+        STACK_START_ADDRESS,
     },
     rng::Chip8Rng,
 };
@@ -108,14 +105,14 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
         // reset all CHIP-8 interpreter state
         ram.zero_out_range(STACK_START_ADDRESS..MEMORY_SIZE)
             .expect("Should be ok to zero out this memory");
-        Chip8Interpreter::<T>::load_fonts(ram, MEMORY_START_ADDRESS as u16);
+        Chip8Interpreter::<T>::load_fonts(ram);
 
         ram.set_u16_at(PROGRAM_COUNTER_ADDRESS, PROGRAM_START_ADDRESS as u16);
         ram.set_u16_at(STACK_POINTER_ADDRESS, STACK_START_ADDRESS as u16);
     }
 
-    fn load_fonts(ram: &mut CosmacRAM, start_address: u16) {
-        ram.load_bytes(&CHARACTER_BYTES, 0x0000)
+    fn load_fonts(ram: &mut CosmacRAM) {
+        ram.load_bytes(&CHARACTER_BYTES, CHARACTER_BYTES_ADDRESS)
             .expect("Should be ok to load font data data in low memory.");
         ram.load_bytes(&CHARACTER_MAP, CHARACTER_MAP_ADDRESS)
             .expect("Should be ok to load character map in low memory.");
@@ -482,7 +479,8 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
                 // Erase the display buffer
                 ram.zero_out_range(
                     DISPLAY_REFRESH_START_ADDRESS..DISPLAY_REFRESH_START_ADDRESS + 256,
-                );
+                )
+                .expect("Zeroing the display buffer should be ok");
             }
             op if op & 0xF000 == 0xD000 => {
                 // DXYN instruction: show sprite pointed to by I at VX-VY coordinates
@@ -516,7 +514,10 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
                             pixel_collision = true;
                         }
                         left_byte ^= left_byte_pixels;
-                        ram.load_bytes(&[left_byte], current_display_byte_address);
+                        ram.load_bytes(&[left_byte], current_display_byte_address)
+                            .expect(
+                                "Loading bytes into the display buffer should not cause an error",
+                            );
                         if pixel_col_offset != 0 && byte_col < 7 {
                             let right_byte_pixels = sprite_pixel_row << (8 - pixel_col_offset);
                             let mut right_byte = ram.bytes()[current_display_byte_address + 1];
@@ -524,7 +525,8 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
                                 pixel_collision = true;
                             }
                             right_byte ^= right_byte_pixels;
-                            ram.load_bytes(&[right_byte], current_display_byte_address + 1);
+                            ram.load_bytes(&[right_byte], current_display_byte_address + 1)
+                                .expect("Loading bytes into the display buffer should not cause an error");
                         }
 
                         // advance to the next row of pixels in the display buffer

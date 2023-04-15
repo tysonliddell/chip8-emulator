@@ -2,8 +2,8 @@
 
 use std::time::Duration;
 
-use minifb::{Key, Window, WindowOptions};
-use rodio::{source, OutputStream, OutputStreamHandle, Sink, Source};
+use minifb::{Key, Window};
+use rodio::{source, OutputStream, Sink, Source};
 
 use crate::interpreter::{DISPLAY_HEIGHT_PIXELS, DISPLAY_WIDTH_PIXELS};
 
@@ -16,7 +16,7 @@ pub trait Tone {
 }
 
 pub trait Screen {
-    fn draw_buffer(&mut self, buffer: &[u8]) {}
+    fn draw_buffer(&mut self, _buffer: &[u8]) {}
 }
 
 pub trait HexKeyboard {
@@ -77,13 +77,13 @@ impl HexKeyboard for Window {
 }
 
 pub struct Beeper {
-    stream: OutputStream,
+    _stream: OutputStream,
     sink: rodio::Sink,
 }
 
 impl Beeper {
     pub fn new(freq_hz: u32) -> Self {
-        let (stream, stream_handle) = OutputStream::try_default().unwrap();
+        let (_stream, stream_handle) = OutputStream::try_default().unwrap();
         let sink = Sink::try_new(&stream_handle).unwrap();
         sink.pause();
 
@@ -93,7 +93,7 @@ impl Beeper {
             .amplify(0.20);
         sink.append(source);
 
-        Self { stream, sink }
+        Self { _stream, sink }
     }
 }
 

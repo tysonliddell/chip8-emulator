@@ -79,7 +79,7 @@
 use std::ops::Range;
 
 use crate::{interpreter::I_ADDRESS, Error, Result};
-const SMALL_MEMORY_SIZE: usize = 0x0800; // The 2K system
+const _SMALL_MEMORY_SIZE: usize = 0x0800; // The 2K system
 const LARGE_MEMORY_SIZE: usize = 0x1000; // The beefier 4K system
 pub const MEMORY_SIZE: usize = LARGE_MEMORY_SIZE;
 
