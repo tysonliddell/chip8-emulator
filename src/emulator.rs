@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    interpreter::{Chip8Interpreter, DISPLAY_WIDTH_PIXELS, PROGRAM_COUNTER_ADDRESS},
+    interpreter::Chip8Interpreter,
     memory::CosmacRAM,
     peripherals::{HexKeyboard, Screen, Tone},
     Result,

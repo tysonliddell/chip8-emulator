@@ -1,7 +1,3 @@
-// TODO: Do not allow unused code. This is here to keep pre-commit hooks happy
-// while developing.
-#![allow(unused)]
-
 #[cfg(test)]
 #[macro_use]
 mod test_utils;
