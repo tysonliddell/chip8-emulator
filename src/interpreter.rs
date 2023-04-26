@@ -83,9 +83,6 @@ const HEX_KEY_SEEN_WHILE_WAITING_FLAG: u16 = 0x0100;
 const HEX_KEY_DEPRESSED_FLAG: u16 = 0x0010;
 const HEX_KEY_LAST_PRESSED_MASK: u16 = 0x000F;
 
-pub(crate) const DISPLAY_HEIGHT_PIXELS: usize = 32;
-pub(crate) const DISPLAY_WIDTH_PIXELS: usize = 64;
-
 pub struct Chip8Interpreter<T: Chip8Rng = fastrand::Rng> {
     rng: T,
     timer_expiry: Option<Instant>,
@@ -612,7 +609,7 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
         ram.set_u16_at(PROGRAM_COUNTER_ADDRESS, next_instruction_address as u16);
     }
 
-    pub fn get_state(ram: &CosmacRAM) -> Chip8State {
+    pub fn _get_state(ram: &CosmacRAM) -> Chip8State {
         let pc = ram.get_u16_at(PROGRAM_COUNTER_ADDRESS);
 
         Chip8State {
@@ -658,6 +655,12 @@ impl<T: Chip8Rng> Chip8Interpreter<T> {
         // tone when the timer value is >= 2.
         ram.get_u16_at(TONE_TIMER_ADDRESS) > 1
     }
+
+    pub fn is_on_draw_instruction(ram: &CosmacRAM) -> bool {
+        let pc = ram.get_u16_at(PROGRAM_COUNTER_ADDRESS);
+        let instruction = ram.get_u16_at(pc as usize);
+        instruction & 0xF000 == 0xD000
+    }
 }
 
 #[cfg(test)]
@@ -671,9 +674,8 @@ mod tests {
             HEX_KEY_DEPRESSED_FLAG, HEX_KEY_LAST_PRESSED_MASK, HEX_KEY_STATUS_ADDRESS, I_ADDRESS,
             PROGRAM_COUNTER_ADDRESS, TIMER_ADDRESS, TONE_TIMER_ADDRESS,
         },
-        memory::{CosmacRAM, DISPLAY_REFRESH_START_ADDRESS, PROGRAM_START_ADDRESS},
+        memory::{CosmacRAM, DISPLAY_REFRESH_START_ADDRESS},
         rng::MockChip8Rng,
-        test_utils,
     };
 
     use super::Chip8Interpreter;

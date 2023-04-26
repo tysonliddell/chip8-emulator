@@ -7,9 +7,11 @@ description = "A CHIP-8 emulator"
 
 [dependencies]
 clap = { version = "4.1.13", features = ["derive"] }
+env_logger = "0.10.0"
 fastrand = "1.9.0"
-minifb = "0.24.0"
+pixels = "0.12.0"
 rodio = "0.17.1"
+winit = "0.28.3"
 
 [dev-dependencies]
 mock_instant = "0.2.1"
